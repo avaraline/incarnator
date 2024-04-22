@@ -2,7 +2,7 @@ import datetime
 
 from dateutil.tz import tzutc
 
-from core.ld import canonicalise, parse_ld_date
+from core.ld import canonicalise, get_language, parse_ld_date
 
 
 def test_parse_ld_date():
@@ -106,3 +106,41 @@ def test_canonicalise_multiple_attachment():
     assert attachment[1]["type"] == "PropertyValue"
     assert attachment[1]["name"] == "Attachment 2"
     assert attachment[1]["value"] == "Test 2"
+
+
+def test_get_language():
+    assert (
+        get_language(
+            {
+                "contentMap": {
+                    "en": "<p>Hello</p>",
+                    "es": "<p>hola</p>",
+                },
+                "nameMap": {"de": "Hallo"},
+                "summaryMap": {"fr": "Bonjour"},
+            }
+        )
+        == "en"
+    )
+    assert (
+        get_language(
+            {
+                "nameMap": {"de": "Hallo"},
+                "summaryMap": {"fr": "Bonjour"},
+            }
+        )
+        == "de"
+    )
+    assert (
+        get_language(
+            {
+                "summaryMap": {"fr": "Bonjour"},
+            }
+        )
+        == "fr"
+    )
+    assert get_language({"contentMap": {"en-gb": "<p>Hello</p>"}}) == "en"
+    assert get_language({"contentMap": {"en_GB": "<p>Hello</p>"}}) == "en"
+    assert get_language({"contentMap": {"EN": "<p>Hello</p>"}}) == "en"
+    assert get_language({"contentMap": {"und": "<p>Hello</p>"}}) is None
+    assert get_language({}) is None
