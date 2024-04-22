@@ -2,7 +2,9 @@ from collections.abc import Callable
 from functools import wraps
 
 from django.http import JsonResponse
+
 from core.models import Config
+
 
 def identity_required(function):
     """
