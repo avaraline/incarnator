@@ -10,11 +10,11 @@ from core.uploads import upload_namer
 from core.uris import StaticAbsoluteUrl
 from takahe import __version__
 
+from typing_extensions import TypeAliasType
 
-class UploadedImage(str):
-    """
-    Type used to indicate a setting is an image
-    """
+
+# Type used to indicate a setting is an image
+UploadedImage = TypeAliasType("UploadedImage", str)
 
 
 class Config(models.Model):
@@ -69,7 +69,7 @@ class Config(models.Model):
         """
         Lazily load a System.Config value
         """
-        if key not in cls.SystemOptions.__fields__:
+        if key not in cls.SystemOptions.model_fields:
             raise KeyError(f"Undefined SystemOption for {key}")
         return lazy(lambda: getattr(Config.system, key))
 
@@ -128,9 +128,9 @@ class Config(models.Model):
 
     @classmethod
     def set_value(cls, key, value, options_class, filters):
-        config_field = options_class.__fields__[key]
+        config_field = options_class.model_fields[key]
         if isinstance(value, File):
-            if config_field.type_ is not UploadedImage:
+            if config_field.annotation is not UploadedImage:
                 raise ValueError(f"Cannot save file to {key} of type: {type(value)}")
             cls.objects.update_or_create(
                 key=key,
@@ -140,7 +140,7 @@ class Config(models.Model):
         elif value is None:
             cls.objects.filter(key=key, **filters).delete()
         else:
-            if not isinstance(value, config_field.type_):
+            if not isinstance(value, config_field.annotation):
                 raise ValueError(f"Invalid type for {key}: {type(value)}")
             if value == config_field.default:
                 cls.objects.filter(key=key, **filters).delete()
@@ -233,7 +233,7 @@ class Config(models.Model):
 
         restricted_usernames: str = "admin\nadmins\nadministrator\nadministrators\nsystem\nroot\nannounce\nannouncement\nannouncements"
 
-        custom_head: str | None
+        custom_head: str | None = None
 
     class UserOptions(pydantic.BaseModel):
         light_theme: bool = False

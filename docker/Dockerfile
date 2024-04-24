@@ -21,7 +21,7 @@ RUN apt-get update \
         libxslt1-dev \
         zlib1g-dev \
         postgresql-client \
-    && python3 -m pip install --no-cache-dir --upgrade -r requirements.txt \
+    && python3 -m pip install --no-cache-dir --upgrade --upgrade-strategy eager -r requirements.txt \
     && apt-get purge -y --auto-remove \
         gcc \
         libc6-dev \

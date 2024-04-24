@@ -63,7 +63,7 @@ class DomainAdmin(admin.ModelAdmin):
         for instance in queryset:
             info = instance.fetch_nodeinfo()
             if info:
-                instance.nodeinfo = info.dict()
+                instance.nodeinfo = info.model_dump()
                 instance.save()
 
     @admin.display(description="Software")

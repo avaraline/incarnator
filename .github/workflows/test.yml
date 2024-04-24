@@ -12,46 +12,32 @@ on:
 
 jobs:
   test:
-    name: test py${{ matrix.python-version }} with ${{ matrix.db_name }}
+    name: test py${{ matrix.python-version }} with pg${{ matrix.postgres-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
     strategy:
       matrix:
         python-version: ["3.11", "3.12"]
-        db:
-          - "postgres://postgres:postgres@localhost/postgres"
-        include:
-          - db: "postgres://postgres:postgres@localhost/postgres"
-            db_name: postgres
-            search: true
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+        postgres-version: [15, 16]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+      - name: Set up Postgres ${{ matrix.postgres-version }}
+        uses: ankane/setup-postgres@v1
+        with:
+          postgres-version: ${{ matrix.postgres-version }}
+          database: takahe
       - name: Install dependencies
         run: |
-          sudo apt-get install -y libmemcached-dev libwebp-dev libjpeg-dev
+          sudo apt-get install -y libwebp-dev libjpeg-dev
           python -m pip install -r requirements-dev.txt
       - name: Run pytest
         env:
-          TAKAHE_DATABASE_SERVER: ${{ matrix.db }}
-          TAKAHE_SEARCH: ${{ matrix.search }}
+          TAKAHE_DATABASE_SERVER: "postgres://localhost/takahe"
           TAKAHE_ENVIRONMENT: "test"
           TAKAHE_SECRET_KEY: "testing_secret"
           TAKAHE_MAIN_DOMAIN: "example.com"

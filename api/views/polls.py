@@ -1,13 +1,9 @@
 from django.shortcuts import get_object_or_404
-from hatchway import Schema, api_view
+from hatchway import api_view, QueryOrBody
 
 from activities.models import Post, PostInteraction
 from api import schemas
 from api.decorators import scope_required
-
-
-class PostVoteSchema(Schema):
-    choices: list[int]
 
 
 @scope_required("read:statuses")
@@ -19,8 +15,8 @@ def get_poll(request, id: str) -> schemas.Poll:
 
 @scope_required("write:statuses")
 @api_view.post
-def vote_poll(request, id: str, details: PostVoteSchema) -> schemas.Poll:
+def vote_poll(request, id: str, choices: QueryOrBody[list[int]]) -> schemas.Poll:
     post = get_object_or_404(Post, pk=id, type=Post.Types.question)
-    PostInteraction.create_votes(post, request.identity, details.choices)
+    PostInteraction.create_votes(post, request.identity, choices)
     post.refresh_from_db()
     return schemas.Poll.from_post(post, identity=request.identity)

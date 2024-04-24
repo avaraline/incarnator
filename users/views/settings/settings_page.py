@@ -31,17 +31,17 @@ class SettingsPage(FormView):
         fields = {}
         for key, details in self.options.items():
             field_kwargs = {}
-            config_field = self.options_class.__fields__[key]
-            if config_field.type_ is bool:
+            config_field = self.options_class.model_fields[key]
+            if config_field.annotation is bool:
                 form_field = partial(
                     forms.BooleanField,
                     widget=forms.Select(
                         choices=[(True, "Enabled"), (False, "Disabled")]
                     ),
                 )
-            elif config_field.type_ is UploadedImage:
+            elif config_field.annotation is UploadedImage:
                 form_field = forms.ImageField
-            elif config_field.type_ is str:
+            elif config_field.annotation is str:
                 choices = details.get("choices")
                 if choices:
                     field_kwargs["widget"] = forms.Select(choices=choices)
@@ -53,7 +53,7 @@ class SettingsPage(FormView):
                     )
                 else:
                     form_field = forms.CharField
-            elif config_field.type_ is int:
+            elif config_field.annotation is int:
                 choices = details.get("choices")
                 if choices:
                     field_kwargs["widget"] = forms.Select(choices=choices)
@@ -63,7 +63,9 @@ class SettingsPage(FormView):
                         field_kwargs[int_kwarg] = val
                 form_field = forms.IntegerField
             else:
-                raise ValueError(f"Cannot render settings type {config_field.type_}")
+                raise ValueError(
+                    f"Cannot render settings type {config_field.annotation}"
+                )
             fields[key] = form_field(
                 label=details["title"],
                 help_text=details.get("help_text", ""),

@@ -409,7 +409,7 @@ class Post(StatorModel):
 
     ### Content cleanup and extraction ###
     def clean_type_data(self, value):
-        PostTypeData.parse_obj(value)
+        PostTypeData.model_validate(value)
 
     def _safe_content_note(self, *, local: bool = True):
         return ContentRenderer(local=local).render_post(self.content, self)
@@ -533,7 +533,7 @@ class Post(StatorModel):
                 post.attachments.set(attachments)
             if question:
                 post.type = question["type"]
-                post.type_data = PostTypeData(__root__=question).__root__
+                post.type_data = PostTypeData(root=question).root
             post.save()
             # Recalculate parent stats for replies
             if reply_to:
@@ -916,7 +916,7 @@ class Post(StatorModel):
             post.type = data["type"]
             post.url = data.get("url", data["id"])
             if post.type in (cls.Types.article, cls.Types.question):
-                post.type_data = PostTypeData(__root__=data).__root__
+                post.type_data = PostTypeData(root=data).root
             try:
                 # apparently sometimes posts (Pages?) in the fediverse
                 # don't have content, but this shouldn't be a total failure
@@ -1191,7 +1191,7 @@ class Post(StatorModel):
         if self.language == "":
             language = None
         value = {
-            "id": self.pk,
+            "id": str(self.pk),
             "uri": self.object_uri,
             "created_at": format_ld_date(self.published),
             "account": self.author.to_mastodon_json(include_counts=False),
@@ -1228,9 +1228,9 @@ class Post(StatorModel):
             "favourites_count": self.stats_with_defaults["likes"],
             "replies_count": self.stats_with_defaults["replies"],
             "url": self.absolute_object_uri(),
-            "in_reply_to_id": reply_parent.pk if reply_parent else None,
+            "in_reply_to_id": str(reply_parent.pk) if reply_parent else None,
             "in_reply_to_account_id": (
-                reply_parent.author_id if reply_parent else None
+                str(reply_parent.author_id) if reply_parent else None
             ),
             "reblog": None,
             "poll": self.type_data.to_mastodon_json(self, identity)

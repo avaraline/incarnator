@@ -136,7 +136,7 @@ class PostAttachment(StatorModel):
         elif self.is_video():
             type_ = "video"
         value = {
-            "id": self.pk,
+            "id": str(self.pk),
             "type": type_,
             "url": self.full_url().absolute,
             "preview_url": self.thumbnail_url().absolute,

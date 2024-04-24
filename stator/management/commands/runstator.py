@@ -60,7 +60,7 @@ class Command(BaseCommand):
         run_for: int,
         exclude: list[str],
         *args,
-        **options
+        **options,
     ):
         # Cache system config
         Config.system = Config.load_system()

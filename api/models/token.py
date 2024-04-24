@@ -70,5 +70,5 @@ class Token(models.Model):
 
     def set_push_subscription(self, data: dict):
         # Validate schema and assign
-        self.push_subscription = PushSubscriptionSchema(**data).dict()
+        self.push_subscription = PushSubscriptionSchema(**data).model_dump()
         self.save()

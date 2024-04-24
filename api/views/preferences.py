@@ -10,4 +10,4 @@ from api.decorators import scope_required
 def preferences(request: HttpRequest) -> dict:
     # Ideally this should just return Preferences; maybe hatchway needs a way to
     # indicate response models should be serialized by alias?
-    return schemas.Preferences.from_identity(request.identity).dict(by_alias=True)
+    return schemas.Preferences.from_identity(request.identity).model_dump(by_alias=True)

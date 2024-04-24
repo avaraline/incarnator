@@ -37,9 +37,7 @@ class Command(BaseCommand):
             | Q(inbound_follows__isnull=False)
             | Q(outbound_blocks__isnull=False)
             | Q(inbound_blocks__isnull=False)
-        )[
-            :number
-        ]
+        )[:number]
         identity_ids = identities.values_list("id", flat=True)
         print(f"  found {len(identity_ids)}")
         if not identity_ids:

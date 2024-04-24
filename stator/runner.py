@@ -227,9 +227,9 @@ class StatorRunner:
                 if call_inline:
                     task_deletion(model, in_thread=False)
                 else:
-                    self.tasks[
-                        model._meta.label_lower, "__delete__"
-                    ] = self.executor.submit(task_deletion, model)
+                    self.tasks[model._meta.label_lower, "__delete__"] = (
+                        self.executor.submit(task_deletion, model)
+                    )
 
     def clean_tasks(self):
         """

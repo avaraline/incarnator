@@ -360,5 +360,5 @@ urlpatterns = [
 ]
 
 # Debug toolbar
-if djsettings.DEBUG:
+if djsettings.DEBUG and "debug_toolbar" in djsettings.INSTALLED_APPS:
     urlpatterns.append(path("__debug__/", include("debug_toolbar.urls")))
