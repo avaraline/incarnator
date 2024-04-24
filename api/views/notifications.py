@@ -1,4 +1,4 @@
-from django.http import HttpRequest
+from django.http import Http404, HttpRequest
 from django.shortcuts import get_object_or_404
 from hatchway import ApiResponse, api_view
 
@@ -65,6 +65,8 @@ def get_notification(
     request: HttpRequest,
     id: str,
 ) -> schemas.Notification:
+    if not id.isdigit():
+        raise Http404
     notification = get_object_or_404(
         TimelineService(request.identity).notifications(
             list(NOTIFICATION_TYPES.values())

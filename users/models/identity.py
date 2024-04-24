@@ -1107,8 +1107,6 @@ class Identity(StatorModel):
             "statuses_count": self.posts.count() if include_counts else 0,
             "followers_count": self.inbound_follows.count() if include_counts else 0,
             "following_count": self.outbound_follows.count() if include_counts else 0,
-            "moved": None,
-            "source": None,
         }
         if source:
             privacy_map = {

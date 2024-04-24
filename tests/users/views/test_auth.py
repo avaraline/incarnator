@@ -81,7 +81,6 @@ def test_signup_invite_only(client, config_system):
         f"/auth/signup/{invite_expired.token}/",
         {"email": "random3@example.com"},
     )
-    print(response.content)
     assert response.status_code == 404
 
 

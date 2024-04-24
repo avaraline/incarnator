@@ -13,11 +13,11 @@ from users.services import IdentityService
 class Application(Schema):
     id: str
     name: str
-    website: str | None
+    website: str | None = None
     client_id: str
     client_secret: str
     redirect_uri: str = Field(alias="redirect_uris")
-    vapid_key: str | None
+    vapid_key: str | None = None
 
     @classmethod
     def from_application(cls, application: api_models.Application) -> "Application":
@@ -45,7 +45,7 @@ class CustomEmoji(Schema):
 class AccountField(Schema):
     name: str
     value: str
-    verified_at: str | None
+    verified_at: str | None = None
 
 
 class Account(Schema):
@@ -66,7 +66,7 @@ class Account(Schema):
     group: bool
     discoverable: bool
     indexable: bool
-    moved: Union[None, bool, "Account"]
+    moved: Union[None, bool, "Account"] = None
     suspended: bool = False
     limited: bool = False
     created_at: str
@@ -74,7 +74,7 @@ class Account(Schema):
     statuses_count: int
     followers_count: int
     following_count: int
-    source: dict | None
+    source: dict | None = None
 
     @classmethod
     def from_identity(
@@ -93,10 +93,10 @@ class MediaAttachment(Schema):
     type: Literal["unknown", "image", "gifv", "video", "audio"]
     url: str
     preview_url: str
-    remote_url: str | None
+    remote_url: str | None = None
     meta: dict
-    description: str | None
-    blurhash: str | None
+    description: str | None = None
+    blurhash: str | None = None
 
     @classmethod
     def from_post_attachment(
@@ -107,16 +107,16 @@ class MediaAttachment(Schema):
 
 class PollOptions(Schema):
     title: str
-    votes_count: int | None
+    votes_count: int | None = None
 
 
 class Poll(Schema):
     id: str
-    expires_at: str | None
+    expires_at: str | None = None
     expired: bool
     multiple: bool
     votes_count: int
-    voters_count: int | None
+    voters_count: int | None = None
     voted: bool
     own_votes: list[int]
     options: list[PollOptions]
@@ -167,7 +167,7 @@ class Status(Schema):
     card: None = Field(...)
     language: str | None = Field(...)
     text: str | None = Field(...)
-    edited_at: str | None
+    edited_at: str | None = None
     favourited: bool = False
     reblogged: bool = False
     muted: bool = False
@@ -281,7 +281,7 @@ class Notification(Schema):
     ]
     created_at: str
     account: Account
-    status: Status | None
+    status: Status | None = None
 
     @classmethod
     def from_timeline_event(
@@ -296,7 +296,7 @@ class Tag(Schema):
     name: str
     url: str
     history: list
-    following: bool | None
+    following: bool | None = None
 
     @classmethod
     def from_hashtag(
@@ -383,7 +383,7 @@ class Announcement(Schema):
     all_day: bool
     published_at: str
     updated_at: str
-    read: bool | None  # Only missing for anonymous responses
+    read: bool | None = None  # Only missing for anonymous responses
     mentions: list[Account]
     statuses: list[Status]
     tags: list[Tag]

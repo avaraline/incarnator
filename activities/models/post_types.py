@@ -19,7 +19,6 @@ class QuestionOption(BaseModel):
 
     def __init__(self, **data) -> None:
         data["votes"] = data.get("votes", data.get("replies", {}).get("totalItems", 0))
-
         super().__init__(**data)
 
 
@@ -28,15 +27,14 @@ class QuestionData(BasePostDataType):
 
     type: Literal["Question"]
     mode: Literal["oneOf", "anyOf"] | None = None
-    options: list[QuestionOption] | None
-    voter_count: int = Field(alias="http://joinmastodon.org/ns#votersCount", default=0)
-    end_time: datetime | None = Field(alias="endTime")
+    options: list[QuestionOption] | None = None
+    voter_count: int = Field(0, alias="http://joinmastodon.org/ns#votersCount")
+    end_time: datetime | None = Field(None, alias="endTime")
 
     def __init__(self, **data) -> None:
         data["voter_count"] = data.get(
             "voter_count", data.get("votersCount", data.get("toot:votersCount", 0))
         )
-
         if "mode" not in data:
             data["mode"] = "anyOf" if "anyOf" in data else "oneOf"
         if "options" not in data:
@@ -96,7 +94,7 @@ class ArticleData(BasePostDataType):
     model_config = ConfigDict(extra="ignore")
 
     type: Literal["Article"]
-    attributed_to: str | None = Field(alias="attributedTo")
+    attributed_to: str | None = Field(None, alias="attributedTo")
 
 
 PostDataType = QuestionData | ArticleData

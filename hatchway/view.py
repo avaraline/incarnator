@@ -283,7 +283,6 @@ class ApiView:
         try:
             model_instance = self.input_model(**values)
         except ValidationError as error:
-            print(error)
             return ApiResponse(
                 {"error": "invalid_input", "error_details": error.errors()},
                 status=400,
