@@ -44,7 +44,7 @@ class DomainStates(StateGraph):
         # Pull their nodeinfo URI
         info = instance.fetch_nodeinfo()
         if info:
-            instance.nodeinfo = info.dict()
+            instance.nodeinfo = info.model_dump()
             instance.save()
             return cls.updated
 

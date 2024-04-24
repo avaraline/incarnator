@@ -21,19 +21,13 @@ class Application(Schema):
 
     @classmethod
     def from_application(cls, application: api_models.Application) -> "Application":
-        instance = cls.from_orm(application)
-        instance.vapid_key = settings.SETUP.VAPID_PUBLIC_KEY
-        return instance
+        return cls(**application.to_mastodon_json())
 
     @classmethod
     def from_application_no_keys(
         cls, application: api_models.Application
     ) -> "Application":
-        instance = cls.from_orm(application)
-        instance.vapid_key = settings.SETUP.VAPID_PUBLIC_KEY
-        instance.client_id = ""
-        instance.client_secret = ""
-        return instance
+        return cls(**application.to_mastodon_json(include_client_keys=False))
 
 
 class CustomEmoji(Schema):
@@ -258,7 +252,7 @@ class StatusSource(Schema):
     @classmethod
     def from_post(cls, post: activities_models.Post):
         return cls(
-            id=post.id,
+            id=str(post.pk),
             text=FediverseHtmlParser(post.content).plain_text,
             spoiler_text=post.summary or "",
         )
@@ -453,7 +447,7 @@ class Preferences(Schema):
                 identity.config_identity.preferred_posting_language
             )
 
-        return cls.parse_obj(
+        return cls.model_validate(
             {
                 "posting:default:visibility": visibility_mapping[
                     identity.config_identity.default_post_visibility

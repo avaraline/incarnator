@@ -61,7 +61,7 @@ def test_question_post(config_system, identity, remote_identity, httpx_mock):
     )
     assert post.type == Post.Types.question
 
-    question_data = QuestionData.parse_obj(post.type_data)
+    question_data = QuestionData.model_validate(post.type_data)
     assert question_data.voter_count == 3
     assert isinstance(question_data.options, list)
     assert len(question_data.options) == 2

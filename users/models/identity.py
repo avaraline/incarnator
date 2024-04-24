@@ -1050,7 +1050,7 @@ class Identity(StatorModel):
 
     def to_mastodon_mention_json(self):
         return {
-            "id": self.id,
+            "id": str(self.pk),
             "username": self.username or "",
             "url": self.absolute_profile_uri() or "",
             "acct": self.handle or "",
@@ -1070,7 +1070,7 @@ class Identity(StatorModel):
         )
         renderer = ContentRenderer(local=False)
         result = {
-            "id": self.pk,
+            "id": str(self.pk),
             "username": self.username or "",
             "acct": self.username if source else self.handle,
             "url": self.absolute_profile_uri() or "",
@@ -1107,6 +1107,8 @@ class Identity(StatorModel):
             "statuses_count": self.posts.count() if include_counts else 0,
             "followers_count": self.inbound_follows.count() if include_counts else 0,
             "following_count": self.outbound_follows.count() if include_counts else 0,
+            "moved": None,
+            "source": None,
         }
         if source:
             privacy_map = {
@@ -1177,6 +1179,6 @@ class Identity(StatorModel):
         """
         Lazily load a config value for this Identity
         """
-        if key not in Config.IdentityOptions.__fields__:
+        if key not in Config.IdentityOptions.model_fields:
             raise KeyError(f"Undefined IdentityOption for {key}")
         return lazy(lambda: getattr(self.config_identity, key))

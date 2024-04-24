@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Literal
 
 from django.utils import timezone
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from core.ld import format_ld_date
 
@@ -24,15 +24,13 @@ class QuestionOption(BaseModel):
 
 
 class QuestionData(BasePostDataType):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     type: Literal["Question"]
     mode: Literal["oneOf", "anyOf"] | None = None
     options: list[QuestionOption] | None
     voter_count: int = Field(alias="http://joinmastodon.org/ns#votersCount", default=0)
     end_time: datetime | None = Field(alias="endTime")
-
-    class Config:
-        extra = "ignore"
-        allow_population_by_field_name = True
 
     def __init__(self, **data) -> None:
         data["voter_count"] = data.get(
@@ -53,7 +51,7 @@ class QuestionData(BasePostDataType):
 
         multiple = self.mode == "anyOf"
         value = {
-            "id": post.id,
+            "id": str(post.pk),
             "expires_at": None,
             "expired": False,
             "multiple": multiple,
@@ -95,24 +93,23 @@ class QuestionData(BasePostDataType):
 
 
 class ArticleData(BasePostDataType):
+    model_config = ConfigDict(extra="ignore")
+
     type: Literal["Article"]
     attributed_to: str | None = Field(alias="attributedTo")
-
-    class Config:
-        extra = "ignore"
 
 
 PostDataType = QuestionData | ArticleData
 
 
-class PostTypeData(BaseModel):
-    __root__: PostDataType = Field(discriminator="type")
+class PostTypeData(RootModel):
+    root: PostDataType = Field(discriminator="type")
 
 
 class PostTypeDataEncoder(json.JSONEncoder):
     def default(self, o):
         if isinstance(o, BasePostDataType):
-            return o.dict()
+            return o.model_dump()
         elif isinstance(o, datetime):
             return o.isoformat()
         return json.JSONEncoder.default(self, o)
@@ -122,5 +119,5 @@ class PostTypeDataDecoder(json.JSONDecoder):
     def decode(self, *args, **kwargs):
         s = super().decode(*args, **kwargs)
         if isinstance(s, dict):
-            return PostTypeData.parse_obj(s).__root__
+            return PostTypeData.model_validate(s).root
         return s

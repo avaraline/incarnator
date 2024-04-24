@@ -1,6 +1,7 @@
 import secrets
 
 from django.db import models
+from django.conf import settings
 
 
 class Application(models.Model):
@@ -19,6 +20,9 @@ class Application(models.Model):
 
     created = models.DateTimeField(auto_now_add=True)
     updated = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.name
 
     @classmethod
     def create(
@@ -39,3 +43,14 @@ class Application(models.Model):
             redirect_uris=redirect_uris,
             scopes=scopes or "read",
         )
+
+    def to_mastodon_json(self, include_client_keys=True):
+        return {
+            "id": str(self.pk),
+            "name": self.name,
+            "website": self.website,
+            "client_id": self.client_id if include_client_keys else "",
+            "client_secret": self.client_secret if include_client_keys else "",
+            "redirect_uris": self.redirect_uris,
+            "vapid_key": settings.SETUP.VAPID_PUBLIC_KEY,
+        }

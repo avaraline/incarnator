@@ -39,7 +39,7 @@ class PostPollSchema(Schema):
 
 
 class PostStatusSchema(Schema):
-    status: str | None
+    status: str | None = None
     in_reply_to_id: str | None = None
     sensitive: bool = False
     spoiler_text: str | None = None

@@ -252,7 +252,7 @@ class IdentityService:
         """
         relationships = self.relationships(from_identity)
         return {
-            "id": self.identity.pk,
+            "id": str(self.identity.pk),
             "following": relationships["outbound_follow"] is not None
             and relationships["outbound_follow"].accepted,
             "followed_by": relationships["inbound_follow"] is not None

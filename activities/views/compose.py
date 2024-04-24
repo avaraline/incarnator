@@ -80,9 +80,7 @@ class Compose(IdentityViewMixin, FormView):
         def __init__(self, identity, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self.identity = identity
-            self.fields["text"].widget.attrs[
-                "_"
-            ] = rf"""
+            self.fields["text"].widget.attrs["_"] = rf"""
                 init
                     -- Move cursor to the end of existing text
                     set my.selectionStart to my.value.length

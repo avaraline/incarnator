@@ -222,7 +222,7 @@ class TimelineEvent(models.Model):
 
     def to_mastodon_notification_json(self, interactions=None):
         result = {
-            "id": self.pk,
+            "id": str(self.pk),
             "created_at": format_ld_date(self.created),
             "account": self.subject_identity.to_mastodon_json(),
         }

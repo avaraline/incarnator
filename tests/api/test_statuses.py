@@ -22,7 +22,7 @@ def test_post_status(api_client, identity):
         data={
             "status": "Hello, world!",
             "visibility": "unlisted",
-            "media_ids": [attachment.id],
+            "media_ids": [str(attachment.pk)],
         },
     ).json()
     assert response["content"] == "<p>Hello, world!</p>"
@@ -38,9 +38,9 @@ def test_post_status(api_client, identity):
         content_type="application/json",
         data={
             "status": "Hello, world! Again!",
-            "media_ids": [attachment.id],
+            "media_ids": [str(attachment.pk)],
             "media_attributes": [
-                {"id": attachment.id, "description": "the alt text"},
+                {"id": str(attachment.pk), "description": "the alt text"},
             ],
         },
     ).json()
@@ -73,7 +73,7 @@ def test_post_statusless(api_client, identity):
         "/api/v1/statuses",
         content_type="application/json",
         data={
-            "media_ids": [attachment.id],
+            "media_ids": [str(attachment.pk)],
         },
     )
     assert 200 <= response.status_code < 300

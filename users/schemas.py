@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class NodeInfoServices(BaseModel):
@@ -19,13 +19,11 @@ class NodeInfoUsage(BaseModel):
 
 
 class NodeInfo(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     version: Literal["2.0"]
     software: NodeInfoSoftware
     protocols: list[str] | None
     open_registrations: bool = Field(alias="openRegistrations")
     usage: NodeInfoUsage
-
     metadata: dict[str, Any] | None
-
-    class Config:
-        extra = "ignore"

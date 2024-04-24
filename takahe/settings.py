@@ -3,32 +3,46 @@ import secrets
 import sys
 import urllib.parse
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Annotated
 
 import dj_database_url
 import django_cache_url
 import httpx
 import sentry_sdk
 from corsheaders.defaults import default_headers
-from pydantic import AnyUrl, BaseSettings, EmailStr, Field, validator
-
+from pydantic import (
+    AnyUrl,
+    EmailStr,
+    Field,
+    PostgresDsn,
+    UrlConstraints,
+)
+from pydantic_core import Url
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from takahe import __version__
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-class CacheBackendUrl(AnyUrl):
-    host_required = False
-    allowed_schemes = django_cache_url.BACKENDS.keys()
+CacheBackendUrl = Annotated[
+    Url,
+    UrlConstraints(
+        host_required=False, allowed_schemes=list(django_cache_url.BACKENDS.keys())
+    ),
+]
+
+ImplicitHostname = Annotated[
+    Url,
+    UrlConstraints(host_required=False),
+]
 
 
-class ImplicitHostname(AnyUrl):
-    host_required = False
-
-
-class MediaBackendUrl(AnyUrl):
-    host_required = False
-    allowed_schemes = {"s3", "s3-insecure", "gs", "local"}
+MediaBackendUrl = Annotated[
+    Url,
+    UrlConstraints(
+        host_required=False, allowed_schemes=["s3", "s3-insecure", "gs", "local"]
+    ),
+]
 
 
 def as_bool(v: str | list[str] | None):
@@ -54,8 +68,15 @@ class Settings(BaseSettings):
     typing, consistent prefixes, .venv support, etc.
     """
 
+    model_config = SettingsConfigDict(
+        env_prefix="TAKAHE_",
+        env_file=BASE_DIR / TAKAHE_ENV_FILE,
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
+
     #: The default database.
-    DATABASE_SERVER: ImplicitHostname | None
+    DATABASE_SERVER: PostgresDsn | None = None
 
     #: The currently running environment, used for things such as sentry
     #: error reporting.
@@ -159,34 +180,11 @@ class Settings(BaseSettings):
     VAPID_PUBLIC_KEY: str | None = None
     VAPID_PRIVATE_KEY: str | None = None
 
-    PGHOST: str | None = None
-    PGPORT: int | None = 5432
-    PGNAME: str = "takahe"
-    PGUSER: str = "postgres"
-    PGPASSWORD: str | None = None
-
-    @validator("PGHOST", always=True)
-    def validate_db(cls, PGHOST, values):  # noqa
-        if not values.get("DATABASE_SERVER") and not PGHOST:
-            raise ValueError("Either DATABASE_SERVER or PGHOST are required.")
-        return PGHOST
-
-    class Config:
-        env_prefix = "TAKAHE_"
-        env_file = str(BASE_DIR / TAKAHE_ENV_FILE)
-        env_file_encoding = "utf-8"
-        # Case sensitivity doesn't work on Windows, so might as well be
-        # consistent from the get-go.
-        case_sensitive = False
-
-        # Override the env_prefix so these fields load without TAKAHE_
-        fields = {
-            "PGHOST": {"env": "PGHOST"},
-            "PGPORT": {"env": "PGPORT"},
-            "PGNAME": {"env": "PGNAME"},
-            "PGUSER": {"env": "PGUSER"},
-            "PGPASSWORD": {"env": "PGPASSWORD"},
-        }
+    PGHOST: str | None = Field(None, alias="PGHOST")
+    PGPORT: int | None = Field(5432, alias="PGPORT")
+    PGNAME: str = Field("takahe", alias="PGNAME")
+    PGUSER: str = Field("postgres", alias="PGUSER")
+    PGPASSWORD: str | None = Field(None, alias="PGPASSWORD")
 
 
 SETUP = Settings()
@@ -262,7 +260,7 @@ WSGI_APPLICATION = "takahe.wsgi.application"
 
 if SETUP.DATABASE_SERVER:
     DATABASES = {
-        "default": dj_database_url.parse(SETUP.DATABASE_SERVER, conn_max_age=600)
+        "default": dj_database_url.parse(str(SETUP.DATABASE_SERVER), conn_max_age=600)
     }
 else:
     DATABASES = {
@@ -378,9 +376,9 @@ if SETUP.SENTRY_DSN:
     sentry_experiments = {}
 
     if SETUP.SENTRY_EXPERIMENTAL_PROFILES_TRACES_SAMPLE_RATE > 0:
-        sentry_experiments[
-            "profiles_sample_rate"
-        ] = SETUP.SENTRY_EXPERIMENTAL_PROFILES_TRACES_SAMPLE_RATE
+        sentry_experiments["profiles_sample_rate"] = (
+            SETUP.SENTRY_EXPERIMENTAL_PROFILES_TRACES_SAMPLE_RATE
+        )
 
     sentry_sdk.init(
         dsn=SETUP.SENTRY_DSN,
@@ -399,24 +397,23 @@ if SETUP.SENTRY_DSN:
 
 SERVER_EMAIL = SETUP.EMAIL_FROM
 if SETUP.EMAIL_SERVER:
-    parsed = urllib.parse.urlparse(SETUP.EMAIL_SERVER)
-    query = urllib.parse.parse_qs(parsed.query)
-    if parsed.scheme == "console":
+    query = urllib.parse.parse_qs(SETUP.EMAIL_SERVER.query)
+    if SETUP.EMAIL_SERVER.scheme == "console":
         EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
-    elif parsed.scheme == "sendgrid":
+    elif SETUP.EMAIL_SERVER.scheme == "sendgrid":
         EMAIL_HOST = "smtp.sendgrid.net"
         EMAIL_PORT = 587
         EMAIL_HOST_USER = "apikey"
         # urlparse will lowercase it
-        EMAIL_HOST_PASSWORD = SETUP.EMAIL_SERVER.split("://")[1]
+        EMAIL_HOST_PASSWORD = SETUP.EMAIL_SERVER.host
         EMAIL_USE_TLS = True
-    elif parsed.scheme == "smtp":
-        EMAIL_HOST = parsed.hostname
-        EMAIL_PORT = parsed.port
-        if parsed.username is not None:
-            EMAIL_HOST_USER = urllib.parse.unquote(parsed.username)
-        if parsed.password is not None:
-            EMAIL_HOST_PASSWORD = urllib.parse.unquote(parsed.password)
+    elif SETUP.EMAIL_SERVER.scheme == "smtp":
+        EMAIL_HOST = SETUP.EMAIL_SERVER.host
+        EMAIL_PORT = SETUP.EMAIL_SERVER.port
+        if SETUP.EMAIL_SERVER.username is not None:
+            EMAIL_HOST_USER = urllib.parse.unquote(SETUP.EMAIL_SERVER.username)
+        if SETUP.EMAIL_SERVER.password is not None:
+            EMAIL_HOST_PASSWORD = urllib.parse.unquote(SETUP.EMAIL_SERVER.password)
         EMAIL_USE_TLS = as_bool(query.get("tls"))
         EMAIL_USE_SSL = as_bool(query.get("ssl"))
     else:
@@ -424,36 +421,40 @@ if SETUP.EMAIL_SERVER:
 
 
 if SETUP.MEDIA_BACKEND:
-    parsed = urllib.parse.urlparse(SETUP.MEDIA_BACKEND)
-    query = urllib.parse.parse_qs(parsed.query)
-    if parsed.scheme == "gs":
+    query = urllib.parse.parse_qs(SETUP.MEDIA_BACKEND.query)
+    path = SETUP.MEDIA_BACKEND.path or ""
+    if SETUP.MEDIA_BACKEND.scheme == "gs":
         STORAGES["default"]["BACKEND"] = "core.uploads.TakaheGoogleCloudStorage"
-        GS_BUCKET_NAME = parsed.path.lstrip("/")
+        GS_BUCKET_NAME = path.lstrip("/")
         GS_QUERYSTRING_AUTH = False
-        if parsed.hostname is not None:
-            port = parsed.port or 443
-            GS_CUSTOM_ENDPOINT = f"https://{parsed.hostname}:{port}"
-    elif (parsed.scheme == "s3") or (parsed.scheme == "s3-insecure"):
+        if SETUP.MEDIA_BACKEND.host is not None:
+            port = SETUP.MEDIA_BACKEND.port or 443
+            GS_CUSTOM_ENDPOINT = f"https://{SETUP.MEDIA_BACKEND.host}:{port}"
+    elif (SETUP.MEDIA_BACKEND.scheme == "s3") or (
+        SETUP.MEDIA_BACKEND.scheme == "s3-insecure"
+    ):
         STORAGES["default"]["BACKEND"] = "core.uploads.TakaheS3Storage"
-        AWS_STORAGE_BUCKET_NAME = parsed.path.lstrip("/")
+        AWS_STORAGE_BUCKET_NAME = path.lstrip("/")
         AWS_QUERYSTRING_AUTH = False
         AWS_DEFAULT_ACL = SETUP.MEDIA_BACKEND_S3_ACL
-        if parsed.username is not None:
-            AWS_ACCESS_KEY_ID = parsed.username
-            AWS_SECRET_ACCESS_KEY = urllib.parse.unquote(parsed.password)
-        if parsed.hostname is not None:
-            if parsed.scheme == "s3-insecure":
+        if SETUP.MEDIA_BACKEND.username is not None:
+            AWS_ACCESS_KEY_ID = SETUP.MEDIA_BACKEND.username
+            AWS_SECRET_ACCESS_KEY = urllib.parse.unquote(
+                SETUP.MEDIA_BACKEND.password or ""
+            )
+        if SETUP.MEDIA_BACKEND.host is not None:
+            if SETUP.MEDIA_BACKEND.scheme == "s3-insecure":
                 s3_default_port = 80
                 s3_scheme = "http"
             else:
                 s3_default_port = 443
                 s3_scheme = "https"
-            port = parsed.port or s3_default_port
-            AWS_S3_ENDPOINT_URL = f"{s3_scheme}://{parsed.hostname}:{port}"
+            port = SETUP.MEDIA_BACKEND.port or s3_default_port
+            AWS_S3_ENDPOINT_URL = f"{s3_scheme}://{SETUP.MEDIA_BACKEND.host}:{port}"
         if SETUP.MEDIA_URL is not None:
             media_url_parsed = urllib.parse.urlparse(SETUP.MEDIA_URL)
             AWS_S3_CUSTOM_DOMAIN = media_url_parsed.hostname
-    elif parsed.scheme == "local":
+    elif SETUP.MEDIA_BACKEND.scheme == "local":
         if not (MEDIA_ROOT and MEDIA_URL):
             raise ValueError(
                 "You must provide MEDIA_ROOT and MEDIA_URL for a local media backend"
@@ -463,7 +464,7 @@ if SETUP.MEDIA_BACKEND:
                 "The MEDIA_URL setting must start with https://your-domain"
             )
     else:
-        raise ValueError(f"Unsupported media backend {parsed.scheme}")
+        raise ValueError(f"Unsupported media backend {SETUP.MEDIA_BACKEND.scheme}")
 
 CACHES = {
     "default": django_cache_url.parse(SETUP.CACHES_DEFAULT or "dummy://"),
