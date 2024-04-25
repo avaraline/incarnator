@@ -36,7 +36,7 @@
                     </a>
                 {% endif %}
                 {% if request.user.admin or request.user.moderator %}
-                    <a href="{% url "settings_profile" handle=identity.handle %}" class="button danger" title="View in Admin">
+                    <a href="{% url "admin_identity_edit" id=identity.id %}" class="button danger" title="View in Admin">
                         <i class="fa-solid fa-screwdriver-wrench"></i> Admin
                     </a>
                 {% endif %}

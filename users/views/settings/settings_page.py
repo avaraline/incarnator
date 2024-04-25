@@ -104,6 +104,7 @@ class SettingsPage(FormView):
             context["fieldsets"][title] = [context["form"][field] for field in fields]
         if hasattr(self, "identity"):
             context["identity"] = self.identity
+        context["identities"] = self.request.user.identities.all()
         return context
 
     def form_valid(self, form):

@@ -10,11 +10,11 @@ from core.html import FediverseHtmlParser
 from core.models.config import Config
 from users.models import IdentityStates
 from users.services import IdentityService
-from users.shortcuts import by_handle_or_404
+from users.views.base import IdentityViewMixin
 
 
 @method_decorator(login_required, name="dispatch")
-class ProfilePage(FormView):
+class ProfilePage(IdentityViewMixin, FormView):
     """
     Lets the identity's profile be edited
     """
@@ -79,15 +79,6 @@ class ProfilePage(FormView):
             if not metadata:
                 return None
             return metadata
-
-    def dispatch(self, request, handle: str, *args, **kwargs):
-        self.identity = by_handle_or_404(self.request, handle, local=True, fetch=False)
-        return super().dispatch(request, *args, **kwargs)
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        context["identity"] = self.identity
-        return context
 
     def get_initial(self):
         return {

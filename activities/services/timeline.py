@@ -8,7 +8,7 @@ from activities.models import (
     TimelineEvent,
 )
 from activities.services import PostService
-from users.models import Identity, List
+from users.models import Domain, Identity, List
 from users.services import IdentityService
 
 
@@ -47,7 +47,7 @@ class TimelineService:
             .order_by("-created")
         )
 
-    def local(self) -> models.QuerySet[Post]:
+    def local(self, domain: Domain | None = None) -> models.QuerySet[Post]:
         queryset = (
             PostService.queryset()
             .local_public()
@@ -56,6 +56,8 @@ class TimelineService:
         )
         if self.identity is not None:
             queryset = queryset.filter(author__domain=self.identity.domain)
+        elif domain is not None:
+            queryset = queryset.filter(author__domain=domain)
         return queryset
 
     def federated(self) -> models.QuerySet[Post]:

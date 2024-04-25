@@ -22,4 +22,6 @@ class SecurityPage(FormView):
     def get_initial(self):
         return {"email": self.request.user.email}
 
-    template_name = "settings/login_security.html"
+    def get_context_data(self, **kwargs):
+        kwargs["identities"] = self.request.user.identities.all()
+        return super().get_context_data(**kwargs)

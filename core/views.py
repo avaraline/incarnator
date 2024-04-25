@@ -10,15 +10,12 @@ from django.views.generic import TemplateView, View
 from django.views.static import serve
 
 from activities.services.timeline import TimelineService
-from activities.views.timelines import Home
 from core.decorators import cache_page
 from core.models import Config
 
 
 def homepage(request):
-    if request.user.is_authenticated:
-        return Home.as_view()(request)
-    elif request.domain and request.domain.config_domain.single_user:
+    if request.domain and request.domain.config_domain.single_user:
         return redirect(f"/@{request.domain.config_domain.single_user}/")
     else:
         return About.as_view()(request)
@@ -35,7 +32,7 @@ class About(TemplateView):
             "content": mark_safe(
                 markdown_it.MarkdownIt().render(Config.system.site_about)
             ),
-            "posts": service.local()[:10],
+            "posts": service.local(domain=self.request.domain)[:10],
         }
 
 

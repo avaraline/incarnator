@@ -22,4 +22,5 @@ class IdentityViewMixin:
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context["identity"] = self.identity
+        context["identities"] = self.request.user.identities.all()
         return context

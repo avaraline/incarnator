@@ -179,7 +179,6 @@ header .logo {
     font-weight: bold;
     background: var(--color-highlight);
     border-radius: 0 0 5px 5px;
-    text-transform: lowercase;
     padding: 6px 8px 5px 7px;
     height: 42px;
     font-size: 120%;
@@ -334,7 +333,7 @@ nav a i {
 }
 
 nav .identity-banner {
-    margin: 5px 0 10px 7px;
+    margin: 20px 0 5px 7px;
 }
 
 nav .identity-banner img.icon {
@@ -596,6 +595,9 @@ p.authorization-code {
 .handle small {
     display: block;
     color: var(--color-text-dull);
+    white-space: nowrap;
+    overflow-x: hidden;
+    text-overflow: ellipsis;
 }
 
 /* Icon/app listings */
