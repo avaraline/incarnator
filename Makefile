@@ -24,11 +24,8 @@ compose_down:
 .git/hooks/pre-commit: .venv
 	python3 -m pre_commit install
 
-.env:
-	cp development.env .env
-
 _PHONY: setup_local
-setup_local: .venv .env .git/hooks/pre-commit
+setup_local: .venv .git/hooks/pre-commit
 
 _PHONY: startdb stopdb
 startdb:
