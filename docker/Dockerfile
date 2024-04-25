@@ -1,11 +1,13 @@
 ARG IMAGE_HOST=python
-ARG IMAGE_LABEL=3.11-slim-bullseye
+ARG IMAGE_LABEL=3.12-slim
 
 FROM ${IMAGE_HOST}:${IMAGE_LABEL}
 
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    GUNICORN_CMD_ARGS="--workers 8"
 
-COPY requirements.txt requirements.txt
+COPY requirements.lock requirements.lock
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -21,7 +23,7 @@ RUN apt-get update \
         libxslt1-dev \
         zlib1g-dev \
         postgresql-client \
-    && python3 -m pip install --no-cache-dir --upgrade --upgrade-strategy eager -r requirements.txt \
+    && python3 -m pip install --no-cache-dir -r requirements.lock \
     && apt-get purge -y --auto-remove \
         gcc \
         libc6-dev \
@@ -46,11 +48,11 @@ RUN nginx -t
 
 WORKDIR /takahe
 
-RUN TAKAHE_DATABASE_SERVER="postgres://x@example.com/x" TAKAHE_SECRET_KEY="takahe" TAKAHE_MAIN_DOMAIN="static.test" python3 manage.py collectstatic --noinput
+RUN TAKAHE_DATABASE_SERVER="postgres://x@example.com/x" \
+    TAKAHE_SECRET_KEY="takahe" \
+    TAKAHE_MAIN_DOMAIN="static.test" \
+    python3 manage.py collectstatic --noinput
 
 EXPOSE 8000
-
-# Set some sensible defaults
-ENV GUNICORN_CMD_ARGS="--workers 8"
 
 CMD ["bash", "docker/run.sh"]

@@ -13,12 +13,11 @@ repos:
         args: ["--fix=lf"]
       - id: pretty-format-json
         args: ["--autofix", "--indent=4", "--no-ensure-ascii"]
-      - id: requirements-txt-fixer
       - id: trailing-whitespace
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.4.1
     hooks:
       - id: ruff
-        args: [ --fix ]
+        args: ["--fix"]
       - id: ruff-format

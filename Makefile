@@ -19,7 +19,7 @@ compose_down:
 .venv:
 	python3 -m venv .venv
 	. .venv/bin/activate
-	python3 -m pip install -r requirements-dev.txt
+	python3 -m pip install -r requirements-dev.lock
 
 .git/hooks/pre-commit: .venv
 	python3 -m pre_commit install

@@ -14,7 +14,6 @@ from pydantic import (
     AnyUrl,
     EmailStr,
     Field,
-    PostgresDsn,
     UrlConstraints,
 )
 from pydantic_core import Url
@@ -58,8 +57,16 @@ def as_bool(v: str | list[str] | None):
 Environments = Literal["debug", "development", "production", "test"]
 
 TAKAHE_ENV_FILE = os.environ.get(
-    "TAKAHE_ENV_FILE", "test.env" if "pytest" in sys.modules else ".env"
+    "TAKAHE_ENV_FILE", None if "pytest" in sys.modules else BASE_DIR / ".env"
 )
+
+if "pytest" in sys.modules:
+    test_env = {
+        "DATABASE_SERVER": "postgres://postgres@localhost/takahe",
+        "DEBUG": "true",
+    }
+    for key, value in test_env.items():
+        os.environ.setdefault(f"TAKAHE_{key}", value)
 
 
 class Settings(BaseSettings):
@@ -70,13 +77,13 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="TAKAHE_",
-        env_file=BASE_DIR / TAKAHE_ENV_FILE,
+        env_file=TAKAHE_ENV_FILE,
         env_file_encoding="utf-8",
         case_sensitive=False,
     )
 
     #: The default database.
-    DATABASE_SERVER: PostgresDsn | None = None
+    DATABASE_SERVER: ImplicitHostname | None = None
 
     #: The currently running environment, used for things such as sentry
     #: error reporting.

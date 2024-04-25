@@ -34,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get install -y libwebp-dev libjpeg-dev
-          python -m pip install -r requirements-dev.txt
+          python -m pip install -r requirements-dev.lock
       - name: Run pytest
         env:
           TAKAHE_DATABASE_SERVER: "postgres://localhost/takahe"

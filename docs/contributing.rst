@@ -65,7 +65,7 @@ Once your session is up and running, you can:
 
 …install the test dependencies inside your container::
 
-    docker compose -f docker/docker-compose.yml exec web pip install -r requirements-dev.txt
+    docker compose -f docker/docker-compose.yml exec web pip install -r requirements-dev.lock
 
 …run the tests inside your container::
 
