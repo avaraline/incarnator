@@ -222,6 +222,8 @@ class DomainEdit(FormView):
             Domain.objects.exclude(pk=self.domain.pk).update(default=False)
         Config.set_domain(self.domain, "hide_login", form.cleaned_data["hide_login"])
         Config.set_domain(self.domain, "site_name", form.cleaned_data["site_name"])
+        if self.request.POST.get("site_icon__clear"):
+            Config.set_domain(self.domain, "site_icon", None)
         if isinstance(form.cleaned_data["site_icon"], File):
             Config.set_domain(self.domain, "site_icon", form.cleaned_data["site_icon"])
         Config.set_domain(self.domain, "custom_css", form.cleaned_data["custom_css"])

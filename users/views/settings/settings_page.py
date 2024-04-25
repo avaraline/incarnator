@@ -10,6 +10,7 @@ from django.utils.decorators import method_decorator
 from django.views.generic import FormView
 
 from core.models.config import Config, UploadedImage
+from core.types import typeinfo
 from users.shortcuts import by_handle_or_404
 
 
@@ -32,16 +33,17 @@ class SettingsPage(FormView):
         for key, details in self.options.items():
             field_kwargs = {}
             config_field = self.options_class.model_fields[key]
-            if config_field.annotation is bool:
+            config_type, optional, annotations = typeinfo(config_field.annotation)
+            if config_type is bool:
                 form_field = partial(
                     forms.BooleanField,
                     widget=forms.Select(
                         choices=[(True, "Enabled"), (False, "Disabled")]
                     ),
                 )
-            elif config_field.annotation is UploadedImage:
+            elif config_type is UploadedImage:
                 form_field = forms.ImageField
-            elif config_field.annotation is str:
+            elif config_type is str:
                 choices = details.get("choices")
                 if choices:
                     field_kwargs["widget"] = forms.Select(choices=choices)
@@ -53,7 +55,7 @@ class SettingsPage(FormView):
                     )
                 else:
                     form_field = forms.CharField
-            elif config_field.annotation is int:
+            elif config_type is int:
                 choices = details.get("choices")
                 if choices:
                     field_kwargs["widget"] = forms.Select(choices=choices)

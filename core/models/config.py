@@ -5,13 +5,12 @@ import pydantic
 from django.core.files import File
 from django.db import models
 from django.utils.functional import lazy
+from typing_extensions import TypeAliasType
 
+from core.types import typeinfo
 from core.uploads import upload_namer
 from core.uris import StaticAbsoluteUrl
 from takahe import __version__
-
-from typing_extensions import TypeAliasType
-
 
 # Type used to indicate a setting is an image
 UploadedImage = TypeAliasType("UploadedImage", str)
@@ -129,8 +128,9 @@ class Config(models.Model):
     @classmethod
     def set_value(cls, key, value, options_class, filters):
         config_field = options_class.model_fields[key]
+        config_type, optional, annotations = typeinfo(config_field.annotation)
         if isinstance(value, File):
-            if config_field.annotation is not UploadedImage:
+            if config_type is not UploadedImage:
                 raise ValueError(f"Cannot save file to {key} of type: {type(value)}")
             cls.objects.update_or_create(
                 key=key,
@@ -140,7 +140,7 @@ class Config(models.Model):
         elif value is None:
             cls.objects.filter(key=key, **filters).delete()
         else:
-            if not isinstance(value, config_field.annotation):
+            if not isinstance(value, config_type):
                 raise ValueError(f"Invalid type for {key}: {type(value)}")
             if value == config_field.default:
                 cls.objects.filter(key=key, **filters).delete()
