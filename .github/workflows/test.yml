@@ -2,13 +2,15 @@ name: Test
 
 on:
   push:
-    paths-ignore:
-      - 'docs/**'
+    paths:
+      - '**.py'
+      - 'requirements-dev.lock'
     branches:
       - main
   pull_request:
-    paths-ignore:
-      - 'docs/**'
+    paths:
+      - '**.py'
+      - 'requirements-dev.lock'
 
 jobs:
   test:
