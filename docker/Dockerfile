@@ -15,21 +15,8 @@ RUN apt-get update \
         libxslt1.1 \
         nginx \
         busybox \
-        netcat \
-        gcc \
-        libc6-dev \
-        libpq-dev \
-        # Required to build lxml on arm64.
-        libxslt1-dev \
-        zlib1g-dev \
         postgresql-client \
-    && python3 -m pip install --no-cache-dir -r requirements.lock \
-    && apt-get purge -y --auto-remove \
-        gcc \
-        libc6-dev \
-        libpq-dev \
-        libxslt1-dev \
-        zlib1g-dev \
+    && python -m pip install --no-cache-dir -r requirements.lock \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /cache
@@ -48,10 +35,7 @@ RUN nginx -t
 
 WORKDIR /takahe
 
-RUN TAKAHE_DATABASE_SERVER="postgres://x@example.com/x" \
-    TAKAHE_SECRET_KEY="takahe" \
-    TAKAHE_MAIN_DOMAIN="static.test" \
-    python3 manage.py collectstatic --noinput
+RUN TAKAHE_DEBUG="true" python manage.py collectstatic --noinput
 
 EXPOSE 8000
 

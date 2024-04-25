@@ -64,6 +64,7 @@ if "pytest" in sys.modules:
     test_env = {
         "DATABASE_SERVER": "postgres://postgres@localhost/takahe",
         "DEBUG": "true",
+        "ENVIRONMENT": "test",
     }
     for key, value in test_env.items():
         os.environ.setdefault(f"TAKAHE_{key}", value)
