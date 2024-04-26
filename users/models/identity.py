@@ -829,10 +829,7 @@ class Identity(StatorModel):
         return None, None
 
     @classmethod
-    def fetch_pinned_post_uris(cls, uri: str) -> list[str]:
-        """
-        Fetch an identity's featured collection.
-        """
+    def fetch_collection(cls, uri: str) -> list[dict]:
         with httpx.Client(
             timeout=settings.SETUP.REMOTE_TIMEOUT,
             headers={"User-Agent": settings.TAKAHE_USER_AGENT},
@@ -864,89 +861,49 @@ class Identity(StatorModel):
         try:
             json_data = json_from_response(response)
             data = canonicalise(json_data, include_security=True)
-            items: list[dict | str] = []
-            if "orderedItems" in data:
-                items = list(reversed(data["orderedItems"]))
-            elif "items" in data:
-                items = list(data["items"])
-
-            ids = []
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                post_obj: dict | None = item
-                if item["type"] in ["Create", "Update"]:
-                    post_obj = item.get("object")
-                if post_obj:
-                    ids.append(post_obj["id"])
-            return ids
+            # canonicalise seems to turn single-item `items` list into a dict?? gross
+            if value := data.get("orderedItems"):
+                return list(reversed(value)) if isinstance(value, list) else [value]
+            elif value := data.get("items"):
+                return value if isinstance(value, list) else [value]
+            return []
         except ValueError:
             # Some servers return these with a 200 status code!
             if b"not found" in response.content.lower():
                 return []
             raise ValueError(
-                "JSON parse error fetching featured collection",
+                "JSON parse error fetching collection",
                 response.content,
             )
 
     @classmethod
+    def fetch_pinned_post_uris(cls, uri: str) -> list[str]:
+        """
+        Fetch an identity's featured collection (pins).
+        """
+        items = cls.fetch_collection(uri)
+        ids = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item["type"] == "Note":
+                ids.append(item["id"])
+        return ids
+
+    @classmethod
     def fetch_featured_tags(cls, uri: str) -> list[str]:
         """
-        Fetch an identity's featured collection.
+        Fetch an identity's featured tags.
         """
-        with httpx.Client(
-            timeout=settings.SETUP.REMOTE_TIMEOUT,
-            headers={"User-Agent": settings.TAKAHE_USER_AGENT},
-        ) as client:
-            try:
-                response = client.get(
-                    uri,
-                    follow_redirects=True,
-                    headers={"Accept": "application/activity+json"},
-                )
-                response.raise_for_status()
-            except (httpx.HTTPError, ssl.SSLCertVerificationError) as ex:
-                response = getattr(ex, "response", None)
-                if isinstance(ex, httpx.TimeoutException) or (
-                    response and response.status_code in [408, 429, 504]
-                ):
-                    raise TryAgainLater() from ex
-                elif (
-                    response
-                    and response.status_code < 500
-                    and response.status_code not in [401, 403, 404, 406, 410]
-                ):
-                    raise ValueError(
-                        f"Client error fetching featured tags: {response.status_code}",
-                        response.content,
-                    )
-                return []
-
-        try:
-            json_data = json_from_response(response)
-            data = canonicalise(json_data, include_security=True)
-            items: list[dict | str] = []
-            if "orderedItems" in data:
-                items = list(reversed(data["orderedItems"]))
-            elif "items" in data:
-                items = list(data["items"])
-
-            names = []
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                if item["type"] == "Hashtag":
-                    if name := item.get("name"):
-                        names.append(name)
-            return names
-        except ValueError:
-            # Some servers return these with a 200 status code!
-            if b"not found" in response.content.lower():
-                return []
-            raise ValueError(
-                "JSON parse error fetching featured tags",
-                response.content,
-            )
+        items = cls.fetch_collection(uri)
+        names = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item["type"] == "Hashtag":
+                if name := item.get("name"):
+                    names.append(name.lstrip("#"))
+        return names
 
     def fetch_actor(self) -> bool:
         """

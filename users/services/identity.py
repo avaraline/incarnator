@@ -254,12 +254,15 @@ class IdentityService:
 
     @transaction.atomic
     def sync_tags(self, tags):
+        featured = []
         for name in tags:
             hashtag, _ = Hashtag.objects.get_or_create(
                 hashtag=name[: Hashtag.MAXIMUM_LENGTH]
             )
             hashtag.transition_perform(HashtagStates.outdated)
             self.identity.hashtag_features.get_or_create(hashtag=hashtag)
+            featured.append(hashtag)
+        self.identity.hashtag_features.exclude(hashtag__in=featured).delete()
 
     def mastodon_json_relationship(self, from_identity: Identity):
         """
@@ -363,6 +366,7 @@ class IdentityService:
         if actor.featured_collection_uri:
             featured = actor.fetch_pinned_post_uris(actor.featured_collection_uri)
             self.sync_pins(featured)
+        # Putting this in SyncPins because I'm lazy - could be its own internal message
         if actor.featured_tags_uri:
             tags = actor.fetch_featured_tags(actor.featured_tags_uri)
             self.sync_tags(tags)

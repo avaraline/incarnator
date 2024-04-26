@@ -125,13 +125,13 @@ class InboxMessageStates(StateGraph):
                     match instance.message_object_type:
                         case "hashtag":
                             Hashtag.handle_add_ap(instance.message)
-                        case _:
+                        case unknown:
                             PostInteraction.handle_add_ap(instance.message)
                 case "remove":
                     match instance.message_object_type:
                         case "hashtag":
                             Hashtag.handle_remove_ap(instance.message)
-                        case _:
+                        case unknown:
                             PostInteraction.handle_remove_ap(instance.message)
                 case "move":
                     # We're ignoring moves for now
