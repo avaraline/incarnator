@@ -161,6 +161,7 @@ urlpatterns = [
     # Tags
     path("v1/followed_tags", tags.followed_tags),
     path("v1/featured_tags", tags.featured_tags),
+    path("v1/featured_tags/suggestions", tags.featured_tag_suggestions),
     path("v1/tags/<hashtag>", tags.hashtag),
     path("v1/tags/<id>/follow", tags.follow),
     path("v1/tags/<id>/unfollow", tags.unfollow),

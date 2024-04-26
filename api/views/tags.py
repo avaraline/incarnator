@@ -88,3 +88,10 @@ def unfollow(
 @api_view.get
 def featured_tags(request) -> list[schemas.FeaturedTag]:
     return []
+
+
+@scope_required("read:accounts")
+@api_view.get
+def featured_tag_suggestions(request) -> list[schemas.Tag]:
+    # TODO: return recently used by request.identity
+    return []
