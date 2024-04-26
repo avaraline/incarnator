@@ -3,7 +3,6 @@ from typing import Any
 from django.core.files import File
 from django.http import HttpRequest
 from django.shortcuts import get_object_or_404
-from hatchway import ApiResponse, QueryOrBody, api_view
 
 from activities.models import Post, PostInteraction, PostInteractionStates
 from activities.services import SearchService
@@ -11,6 +10,7 @@ from api import schemas
 from api.decorators import scope_required
 from api.pagination import MastodonPaginator, PaginatingApiResponse, PaginationResult
 from core.models import Config
+from hatchway import ApiResponse, QueryOrBody, api_view
 from users.models import Identity, IdentityStates
 from users.services import IdentityService
 from users.shortcuts import by_handle_or_404
@@ -371,8 +371,13 @@ def account_followers(
 
 @api_view.get
 def account_featured_tags(request: HttpRequest, id: str) -> list[schemas.FeaturedTag]:
-    # Not implemented yet
-    return []
+    identity = get_object_or_404(
+        Identity.objects.exclude(restriction=Identity.Restriction.blocked), pk=id
+    )
+    return [
+        schemas.FeaturedTag.from_feature(f)
+        for f in identity.hashtag_features.select_related("hashtag")
+    ]
 
 
 @scope_required("read:lists")
