@@ -2,6 +2,7 @@ import re
 from datetime import date, timedelta
 
 import urlman
+from django.conf import settings
 from django.db import models, transaction
 from django.utils import timezone
 
@@ -239,17 +240,19 @@ class Hashtag(StatorModel):
             tag = Hashtag.ensure_hashtag(data["object"]["name"])
             identity.hashtag_features.filter(hashtag=tag).delete()
 
-    def to_ap(self):
+    def to_ap(self, domain=None):
+        hostname = domain.uri_domain if domain else settings.MAIN_DOMAIN
         return {
             "type": "Hashtag",
-            "href": self.urls.view.full(),
+            "href": f"https://{hostname}/tags/{self.hashtag}/",
             "name": "#" + self.hashtag,
         }
 
-    def to_mastodon_json(self, following: bool | None = None):
+    def to_mastodon_json(self, following: bool | None = None, domain=None):
+        hostname = domain.uri_domain if domain else settings.MAIN_DOMAIN
         value = {
             "name": self.hashtag,
-            "url": self.urls.view.full(),  # type: ignore
+            "url": f"https://{hostname}/tags/{self.hashtag}/",
             "history": [],
         }
 

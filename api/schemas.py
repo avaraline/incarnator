@@ -303,16 +303,18 @@ class Tag(Schema):
         cls,
         hashtag: activities_models.Hashtag,
         following: bool | None = None,
+        domain: users_models.Domain | None = None,
     ) -> "Tag":
-        return cls(**hashtag.to_mastodon_json(following=following))
+        return cls(**hashtag.to_mastodon_json(following=following, domain=domain))
 
     @classmethod
     def map_from_names(
         cls,
         tag_names: list[str],
+        domain: users_models.Domain | None = None,
     ) -> list["Tag"]:
         return [
-            cls.from_hashtag(tag)
+            cls.from_hashtag(tag, domain=domain)
             for tag in activities_models.Hashtag.objects.filter(hashtag__in=tag_names)
         ]
 

@@ -82,5 +82,5 @@ class HashtagFeature(models.Model):
             "id": str(self.pk),
             "statuses_count": 0,
             "last_status_at": "",
-            **self.hashtag.to_mastodon_json(),
+            **self.hashtag.to_mastodon_json(domain=self.identity.domain),
         }

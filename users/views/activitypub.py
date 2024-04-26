@@ -345,7 +345,9 @@ class FeaturedTags(View):
                     "type": "OrderedCollection",
                     "id": self.identity.actor_uri + "collections/tags/",
                     "totalItems": len(tags),
-                    "orderedItems": [tag.hashtag.to_ap() for tag in tags],
+                    "orderedItems": [
+                        tag.hashtag.to_ap(domain=self.identity.domain) for tag in tags
+                    ],
                 }
             ),
             content_type="application/activity+json",

@@ -25,6 +25,7 @@ def hashtag(request: HttpRequest, hashtag: str) -> schemas.Tag:
     return schemas.Tag.from_hashtag(
         tag,
         following=following,
+        domain=request.identity.domain,
     )
 
 
@@ -67,6 +68,7 @@ def follow(
     return schemas.Tag.from_hashtag(
         hashtag,
         following=True,
+        domain=request.identity.domain,
     )
 
 
@@ -84,6 +86,7 @@ def unfollow(
     return schemas.Tag.from_hashtag(
         hashtag,
         following=False,
+        domain=request.identity.domain,
     )
 
 
@@ -122,4 +125,4 @@ def featured_tag_suggestions(request) -> list[schemas.Tag]:
         .values_list("hashtags", flat=True)
     ):
         recent_tags.extend([t for t in tags if t not in recent_tags])
-    return schemas.Tag.map_from_names(recent_tags)
+    return schemas.Tag.map_from_names(recent_tags, domain=request.identity.domain)
