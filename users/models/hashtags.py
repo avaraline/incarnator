@@ -32,7 +32,6 @@ class HashtagFollow(models.Model):
         "activities.Hashtag",
         on_delete=models.CASCADE,
         related_name="followers",
-        db_index=True,
     )
 
     created = models.DateTimeField(auto_now_add=True)
@@ -56,3 +55,32 @@ class HashtagFollow(models.Model):
             return HashtagFollow.objects.get(identity=identity, hashtag=hashtag)
         except HashtagFollow.DoesNotExist:
             return None
+
+
+class HashtagFeature(models.Model):
+    identity = models.ForeignKey(
+        "users.Identity",
+        on_delete=models.CASCADE,
+        related_name="hashtag_features",
+    )
+    hashtag = models.ForeignKey(
+        "activities.Hashtag",
+        on_delete=models.CASCADE,
+        related_name="featurers",
+    )
+
+    created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [("identity", "hashtag")]
+
+    def __str__(self):
+        return f"#{self.id}: {self.identity} → {self.hashtag_id}"
+
+    def to_mastodon_json(self):
+        return {
+            "id": str(self.pk),
+            "statuses_count": 0,
+            "last_status_at": "",
+            **self.hashtag.to_mastodon_json(),
+        }

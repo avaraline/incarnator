@@ -244,6 +244,7 @@ class Identity(StatorModel):
     followers_uri = models.CharField(max_length=500, blank=True, null=True)
     following_uri = models.CharField(max_length=500, blank=True, null=True)
     featured_collection_uri = models.CharField(max_length=500, blank=True, null=True)
+    featured_tags_uri = models.CharField(max_length=500, blank=True, null=True)
     actor_type = models.CharField(max_length=100, default="person")
 
     icon = models.ImageField(
@@ -388,6 +389,7 @@ class Identity(StatorModel):
             self.inbox_uri = self.actor_uri + "inbox/"
             self.outbox_uri = self.actor_uri + "outbox/"
             self.featured_collection_uri = self.actor_uri + "collections/featured/"
+            self.featured_tags_uri = self.actor_uri + "collections/tags/"
             self.followers_uri = self.actor_uri + "followers/"
             self.following_uri = self.actor_uri + "following/"
             self.shared_inbox_uri = f"https://{self.domain.uri_domain}/inbox/"
@@ -587,6 +589,7 @@ class Identity(StatorModel):
             "inbox": self.inbox_uri,
             "outbox": self.outbox_uri,
             "featured": self.featured_collection_uri,
+            "featuredTags": self.featured_tags_uri,
             "followers": self.followers_uri,
             "following": self.following_uri,
             "preferredUsername": self.username,
@@ -886,6 +889,65 @@ class Identity(StatorModel):
                 response.content,
             )
 
+    @classmethod
+    def fetch_featured_tags(cls, uri: str) -> list[str]:
+        """
+        Fetch an identity's featured collection.
+        """
+        with httpx.Client(
+            timeout=settings.SETUP.REMOTE_TIMEOUT,
+            headers={"User-Agent": settings.TAKAHE_USER_AGENT},
+        ) as client:
+            try:
+                response = client.get(
+                    uri,
+                    follow_redirects=True,
+                    headers={"Accept": "application/activity+json"},
+                )
+                response.raise_for_status()
+            except (httpx.HTTPError, ssl.SSLCertVerificationError) as ex:
+                response = getattr(ex, "response", None)
+                if isinstance(ex, httpx.TimeoutException) or (
+                    response and response.status_code in [408, 429, 504]
+                ):
+                    raise TryAgainLater() from ex
+                elif (
+                    response
+                    and response.status_code < 500
+                    and response.status_code not in [401, 403, 404, 406, 410]
+                ):
+                    raise ValueError(
+                        f"Client error fetching featured tags: {response.status_code}",
+                        response.content,
+                    )
+                return []
+
+        try:
+            json_data = json_from_response(response)
+            data = canonicalise(json_data, include_security=True)
+            items: list[dict | str] = []
+            if "orderedItems" in data:
+                items = list(reversed(data["orderedItems"]))
+            elif "items" in data:
+                items = list(data["items"])
+
+            names = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if item["type"] == "Hashtag":
+                    if name := item.get("name"):
+                        names.append(name)
+            return names
+        except ValueError:
+            # Some servers return these with a 200 status code!
+            if b"not found" in response.content.lower():
+                return []
+            raise ValueError(
+                "JSON parse error fetching featured tags",
+                response.content,
+            )
+
     def fetch_actor(self) -> bool:
         """
         Fetches the user's actor information, as well as their domain from
@@ -942,6 +1004,7 @@ class Identity(StatorModel):
         self.followers_uri = document.get("followers")
         self.following_uri = document.get("following")
         self.featured_collection_uri = document.get("featured")
+        self.featured_tags_uri = document.get("featuredTags")
         self.actor_type = document["type"].lower()
         self.shared_inbox_uri = document.get("endpoints", {}).get("sharedInbox")
         self.summary = document.get("summary")
@@ -1022,8 +1085,8 @@ class Identity(StatorModel):
                 with transaction.atomic():
                     self.save()
 
-        # Fetch pinned posts in a followup task
-        if self.featured_collection_uri:
+        # Fetch pinned posts and featured tags in a followup task
+        if self.featured_collection_uri or self.featured_tags_uri:
             InboxMessage.create_internal(
                 {
                     "type": "SyncPins",

@@ -4,7 +4,14 @@ from django.core.exceptions import MultipleObjectsReturned
 from django.db import models, transaction
 from django.template.defaultfilters import linebreaks_filter
 
-from activities.models import FanOut, Post, PostInteraction, PostInteractionStates
+from activities.models import (
+    FanOut,
+    Hashtag,
+    HashtagStates,
+    Post,
+    PostInteraction,
+    PostInteractionStates,
+)
 from core.files import resize_image
 from core.html import FediverseHtmlParser
 from stator.exceptions import TryAgainLater
@@ -245,6 +252,15 @@ class IdentityService:
             ).exclude(post__object_uri__in=object_uris):
                 removed.transition_perform(PostInteractionStates.undone_fanned_out)
 
+    @transaction.atomic
+    def sync_tags(self, tags):
+        for name in tags:
+            hashtag, _ = Hashtag.objects.get_or_create(
+                hashtag=name[: Hashtag.MAXIMUM_LENGTH]
+            )
+            hashtag.transition_perform(HashtagStates.outdated)
+            self.identity.hashtag_features.get_or_create(hashtag=hashtag)
+
     def mastodon_json_relationship(self, from_identity: Identity):
         """
         Returns a Relationship object for the from_identity's relationship
@@ -347,3 +363,6 @@ class IdentityService:
         if actor.featured_collection_uri:
             featured = actor.fetch_pinned_post_uris(actor.featured_collection_uri)
             self.sync_pins(featured)
+        if actor.featured_tags_uri:
+            tags = actor.fetch_featured_tags(actor.featured_tags_uri)
+            self.sync_tags(tags)

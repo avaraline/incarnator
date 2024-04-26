@@ -43,7 +43,7 @@ from core.snowflake import Snowflake
 from stator.exceptions import TryAgainLater
 from stator.models import State, StateField, StateGraph, StatorModel
 from users.models.follow import FollowStates
-from users.models.hashtag_follow import HashtagFollow
+from users.models.hashtags import HashtagFollow
 from users.models.identity import Identity, IdentityStates
 from users.models.inbox_message import InboxMessage
 from users.models.system_actor import SystemActor

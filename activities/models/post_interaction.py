@@ -481,13 +481,12 @@ class PostInteraction(StatorModel):
         """
         Handles an incoming Add activity which is a pin
         """
-        target = data.get("target", None)
+        target = data.get("target")
         if not target:
             return
 
-        # we only care about pinned posts, not hashtags
-        object = data.get("object", {})
-        if isinstance(object, dict) and object.get("type") == "Hashtag":
+        object = data.get("object")
+        if not object:
             return
 
         with transaction.atomic():
@@ -513,13 +512,12 @@ class PostInteraction(StatorModel):
         """
         Handles an incoming Remove activity which is an unpin
         """
-        target = data.get("target", None)
+        target = data.get("target")
         if not target:
             return
 
-        # we only care about pinned posts, not hashtags
-        object = data.get("object", {})
-        if isinstance(object, dict) and object.get("type") == "Hashtag":
+        object = data.get("object")
+        if not object:
             return
 
         with transaction.atomic():

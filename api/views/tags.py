@@ -1,11 +1,14 @@
+import datetime
+
 from django.http import HttpRequest
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 
-from activities.models import Hashtag
+from activities.models import Hashtag, HashtagStates, Post
 from api import schemas
 from api.decorators import scope_required
 from api.pagination import MastodonPaginator, PaginatingApiResponse, PaginationResult
-from hatchway import api_view
+from hatchway import QueryOrBody, api_view
 from users.models import HashtagFollow
 
 
@@ -87,11 +90,39 @@ def unfollow(
 @scope_required("read:accounts")
 @api_view.get
 def featured_tags(request) -> list[schemas.FeaturedTag]:
-    return []
+    return [
+        schemas.FeaturedTag.from_feature(f)
+        for f in request.identity.hashtag_features.select_related("hashtag")
+    ]
+
+
+@scope_required("write:accounts")
+@api_view.post
+def feature_tag(request, name: QueryOrBody[str]) -> schemas.FeaturedTag:
+    tag, created = Hashtag.objects.get_or_create(
+        hashtag=name.strip().lower()[: Hashtag.MAXIMUM_LENGTH]
+    )
+    feature, _ = request.identity.hashtag_features.get_or_create(hashtag=tag)
+    tag.transition_perform(HashtagStates.outdated)
+    return schemas.FeaturedTag.from_feature(feature)
+
+
+@scope_required("write:accounts")
+@api_view.delete
+def unfeature_tag(request, id: str) -> dict:
+    request.identity.hashtag_features.filter(pk=id).delete()
+    return {}
 
 
 @scope_required("read:accounts")
 @api_view.get
 def featured_tag_suggestions(request) -> list[schemas.Tag]:
-    # TODO: return recently used by request.identity
-    return []
+    since = timezone.now() - datetime.timedelta(days=7)
+    recent_tags = []
+    for tags in (
+        Post.objects.not_hidden()
+        .filter(author=request.identity, created__gte=since, hashtags__isnull=False)
+        .values_list("hashtags", flat=True)
+    ):
+        recent_tags.extend([t for t in tags if t not in recent_tags])
+    return schemas.Tag.map_from_names(recent_tags)

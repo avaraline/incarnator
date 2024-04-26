@@ -306,6 +306,16 @@ class Tag(Schema):
     ) -> "Tag":
         return cls(**hashtag.to_mastodon_json(following=following))
 
+    @classmethod
+    def map_from_names(
+        cls,
+        tag_names: list[str],
+    ) -> list["Tag"]:
+        return [
+            cls.from_hashtag(tag)
+            for tag in activities_models.Hashtag.objects.filter(hashtag__in=tag_names)
+        ]
+
 
 class FollowedTag(Tag):
     id: str
@@ -331,6 +341,13 @@ class FeaturedTag(Schema):
     url: str
     statuses_count: int
     last_status_at: str
+
+    @classmethod
+    def from_feature(
+        cls,
+        feature: users_models.HashtagFeature,
+    ) -> "FeaturedTag":
+        return cls(**feature.to_mastodon_json())
 
 
 class Search(Schema):

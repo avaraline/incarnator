@@ -152,6 +152,7 @@ def test_fetch_actor(httpx_mock, config_system):
             "followers": "https://example.com/test-actor/followers/",
             "following": "https://example.com/test-actor/following/",
             "featured": "https://example.com/test-actor/collections/featured/",
+            "featuredTags": "https://example.com/test-actor/collections/tags/",
             "icon": {
                 "type": "Image",
                 "mediaType": "image/jpeg",
@@ -189,6 +190,21 @@ def test_fetch_actor(httpx_mock, config_system):
             ],
         },
     )
+    httpx_mock.add_response(
+        url="https://example.com/test-actor/collections/tags/",
+        headers={"Content-Type": "application/activity+json"},
+        json={
+            "type": "Collection",
+            "totalItems": 1,
+            "orderedItems": [
+                {
+                    "type": "Hashtag",
+                    "href": "https://example.com/tags/test/",
+                    "name": "#test",
+                }
+            ],
+        },
+    )
     identity.fetch_actor()
 
     # Verify the data arrived
@@ -202,7 +218,11 @@ def test_fetch_actor(httpx_mock, config_system):
         identity.featured_collection_uri
         == "https://example.com/test-actor/collections/featured/"
     )
+    assert (
+        identity.featured_tags_uri == "https://example.com/test-actor/collections/tags/"
+    )
     identity.fetch_pinned_post_uris(identity.featured_collection_uri)
+    identity.fetch_featured_tags(identity.featured_tags_uri)
     assert identity.icon_uri == "https://example.com/icon.jpg"
     assert identity.image_uri == "https://example.com/image.jpg"
     assert identity.summary == "<p>A test user</p>"

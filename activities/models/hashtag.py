@@ -163,6 +163,35 @@ class Hashtag(StatorModel):
                 results[date(year, month, day)] = val
         return dict(sorted(results.items(), reverse=True)[:num])
 
+    @classmethod
+    def handle_add_ap(cls, data):
+        """
+        Handles an incoming Add activity
+        """
+        print("Hashtag.handle_add_ap:", data)
+
+        target = data.get("target", None)
+        if not target:
+            return
+
+    @classmethod
+    def handle_remove_ap(cls, data):
+        """
+        Handles an incoming Remove activity
+        """
+        print("Hashtag.handle_remove_ap:", data)
+
+        target = data.get("target", None)
+        if not target:
+            return
+
+    def to_ap(self):
+        return {
+            "type": "Hashtag",
+            "href": self.urls.view.full(),
+            "name": "#" + self.hashtag,
+        }
+
     def to_mastodon_json(self, following: bool | None = None):
         value = {
             "name": self.hashtag,

@@ -1,6 +1,7 @@
 from django.db import models
 from pyld.jsonld import JsonLdError
 
+from activities.models.hashtag import Hashtag
 from core.exceptions import ActivityPubError
 from stator.models import State, StateField, StateGraph, StatorModel
 
@@ -121,9 +122,17 @@ class InboxMessageStates(StateGraph):
                             case unknown:
                                 return cls.errored
                 case "add":
-                    PostInteraction.handle_add_ap(instance.message)
+                    match instance.message_object_type:
+                        case "hashtag":
+                            Hashtag.handle_add_ap(instance.message)
+                        case _:
+                            PostInteraction.handle_add_ap(instance.message)
                 case "remove":
-                    PostInteraction.handle_remove_ap(instance.message)
+                    match instance.message_object_type:
+                        case "hashtag":
+                            Hashtag.handle_remove_ap(instance.message)
+                        case _:
+                            PostInteraction.handle_remove_ap(instance.message)
                 case "move":
                     # We're ignoring moves for now
                     pass
