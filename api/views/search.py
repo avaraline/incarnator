@@ -41,7 +41,7 @@ def search(
         ]
     if type is None or type == "hashtag":
         result["hashtags"] = [
-            schemas.Tag.from_hashtag(h, domain=request.identity.domain)
+            schemas.Tag.from_hashtag(h, domain=request.domain)
             for h in search_result["hashtags"]
         ]
     if type is None or type == "statuses":

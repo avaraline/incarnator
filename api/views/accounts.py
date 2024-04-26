@@ -375,7 +375,7 @@ def account_featured_tags(request: HttpRequest, id: str) -> list[schemas.Feature
         Identity.objects.exclude(restriction=Identity.Restriction.blocked), pk=id
     )
     return [
-        schemas.FeaturedTag.from_feature(f)
+        schemas.FeaturedTag.from_feature(f, domain=request.domain)
         for f in identity.hashtag_features.select_related("hashtag")
     ]
 

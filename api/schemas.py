@@ -348,8 +348,9 @@ class FeaturedTag(Schema):
     def from_feature(
         cls,
         feature: users_models.HashtagFeature,
+        domain: users_models.Domain | None = None,
     ) -> "FeaturedTag":
-        return cls(**feature.to_mastodon_json())
+        return cls(**feature.to_mastodon_json(domain=domain))
 
 
 class Search(Schema):

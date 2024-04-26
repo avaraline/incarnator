@@ -25,7 +25,7 @@ def hashtag(request: HttpRequest, hashtag: str) -> schemas.Tag:
     return schemas.Tag.from_hashtag(
         tag,
         following=following,
-        domain=request.identity.domain,
+        domain=request.domain,
     )
 
 
@@ -68,7 +68,7 @@ def follow(
     return schemas.Tag.from_hashtag(
         hashtag,
         following=True,
-        domain=request.identity.domain,
+        domain=request.domain,
     )
 
 
@@ -86,7 +86,7 @@ def unfollow(
     return schemas.Tag.from_hashtag(
         hashtag,
         following=False,
-        domain=request.identity.domain,
+        domain=request.domain,
     )
 
 
@@ -94,7 +94,7 @@ def unfollow(
 @api_view.get
 def featured_tags(request) -> list[schemas.FeaturedTag]:
     return [
-        schemas.FeaturedTag.from_feature(f)
+        schemas.FeaturedTag.from_feature(f, domain=request.domain)
         for f in request.identity.hashtag_features.select_related("hashtag")
     ]
 
@@ -104,7 +104,7 @@ def featured_tags(request) -> list[schemas.FeaturedTag]:
 def feature_tag(request, name: QueryOrBody[str]) -> schemas.FeaturedTag:
     tag = Hashtag.ensure_hashtag(name)
     feature = request.identity.hashtag_features.get_or_create(hashtag=tag)[0]
-    return schemas.FeaturedTag.from_feature(feature)
+    return schemas.FeaturedTag.from_feature(feature, domain=request.domain)
 
 
 @scope_required("write:accounts")
@@ -125,4 +125,4 @@ def featured_tag_suggestions(request) -> list[schemas.Tag]:
         .values_list("hashtags", flat=True)
     ):
         recent_tags.extend([t for t in tags if t not in recent_tags])
-    return schemas.Tag.map_from_names(recent_tags, domain=request.identity.domain)
+    return schemas.Tag.map_from_names(recent_tags, domain=request.domain)

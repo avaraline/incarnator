@@ -77,10 +77,10 @@ class HashtagFeature(models.Model):
     def __str__(self):
         return f"#{self.id}: {self.identity} → {self.hashtag_id}"
 
-    def to_mastodon_json(self):
+    def to_mastodon_json(self, domain=None):
         return {
             "id": str(self.pk),
             "statuses_count": 0,
             "last_status_at": "",
-            **self.hashtag.to_mastodon_json(domain=self.identity.domain),
+            **self.hashtag.to_mastodon_json(domain=domain),
         }
