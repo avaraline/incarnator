@@ -158,6 +158,10 @@ class InboxMessageStates(StateGraph):
                             IdentityService.handle_internal_sync_pins(
                                 instance.message["object"]
                             )
+                        case "synctags":
+                            IdentityService.handle_internal_sync_tags(
+                                instance.message["object"]
+                            )
                         case unknown:
                             return cls.errored
                 case unknown:

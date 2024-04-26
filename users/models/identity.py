@@ -1042,11 +1042,20 @@ class Identity(StatorModel):
                 with transaction.atomic():
                     self.save()
 
-        # Fetch pinned posts and featured tags in a followup task
-        if self.featured_collection_uri or self.featured_tags_uri:
+        # Fetch pinned posts in a followup task
+        if self.featured_collection_uri:
             InboxMessage.create_internal(
                 {
                     "type": "SyncPins",
+                    "identity": self.pk,
+                }
+            )
+
+        # Fetch featured tags in a followup task
+        if self.featured_tags_uri:
+            InboxMessage.create_internal(
+                {
+                    "type": "SyncTags",
                     "identity": self.pk,
                 }
             )

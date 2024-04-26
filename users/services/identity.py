@@ -359,14 +359,25 @@ class IdentityService:
             "identity": "90310938129083",
         }
         """
-        # Retrieve ourselves
         actor = Identity.objects.get(pk=payload["identity"])
         self = cls(actor)
-        # Get the remote end (may need a fetch)
         if actor.featured_collection_uri:
             featured = actor.fetch_pinned_post_uris(actor.featured_collection_uri)
             self.sync_pins(featured)
-        # Putting this in SyncPins because I'm lazy - could be its own internal message
+
+    @classmethod
+    def handle_internal_sync_tags(cls, payload):
+        """
+        Handles an inbox message saying we need to sync featured tags
+
+        Message format:
+        {
+            "type": "SyncTags",
+            "identity": "90310938129083",
+        }
+        """
+        actor = Identity.objects.get(pk=payload["identity"])
+        self = cls(actor)
         if actor.featured_tags_uri:
             tags = actor.fetch_featured_tags(actor.featured_tags_uri)
             self.sync_tags(tags)
