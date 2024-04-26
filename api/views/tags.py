@@ -1,11 +1,11 @@
 from django.http import HttpRequest
 from django.shortcuts import get_object_or_404
-from hatchway import api_view
 
 from activities.models import Hashtag
 from api import schemas
 from api.decorators import scope_required
 from api.pagination import MastodonPaginator, PaginatingApiResponse, PaginationResult
+from hatchway import api_view
 from users.models import HashtagFollow
 
 
@@ -82,3 +82,9 @@ def unfollow(
         hashtag,
         following=False,
     )
+
+
+@scope_required("read:accounts")
+@api_view.get
+def featured_tags(request) -> list[schemas.FeaturedTag]:
+    return []

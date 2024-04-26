@@ -1,10 +1,10 @@
 from django.urls import path
-from hatchway import methods
 
 from api.views import (
     accounts,
     announcements,
     apps,
+    blocks,
     bookmarks,
     emoji,
     filters,
@@ -24,6 +24,7 @@ from api.views import (
     timelines,
     trends,
 )
+from hatchway import methods
 
 urlpatterns = [
     # Accounts
@@ -51,6 +52,8 @@ urlpatterns = [
     # Apps
     path("v1/apps", apps.add_app),
     path("v1/apps/verify_credentials", apps.verify_credentials),
+    # Blocks
+    path("v1/blocks", blocks.blocks),
     # Bookmarks
     path("v1/bookmarks", bookmarks.bookmarks),
     # Emoji
@@ -66,6 +69,7 @@ urlpatterns = [
     path("v1/instance", instance.instance_info_v1),
     path("v1/instance/activity", instance.activity),
     path("v1/instance/peers", instance.peers),
+    path("v1/instance/languages", instance.languages),
     path("v2/instance", instance.instance_info_v2),
     # Lists
     path(
@@ -102,7 +106,13 @@ urlpatterns = [
     # Media
     path("v1/media", media.upload_media),
     path("v2/media", media.upload_media),
-    path("v1/media/<id>", methods(get=media.get_media, put=media.update_media)),
+    path(
+        "v1/media/<id>",
+        methods(
+            get=media.get_media,
+            put=media.update_media,
+        ),
+    ),
     path(
         "v1/statuses/<id>",
         methods(
@@ -150,6 +160,7 @@ urlpatterns = [
     path("v1/statuses/<id>/unpin", statuses.unpin_status),
     # Tags
     path("v1/followed_tags", tags.followed_tags),
+    path("v1/featured_tags", tags.featured_tags),
     path("v1/tags/<hashtag>", tags.hashtag),
     path("v1/tags/<id>/follow", tags.follow),
     path("v1/tags/<id>/unfollow", tags.unfollow),

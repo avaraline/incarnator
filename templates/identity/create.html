@@ -1,8 +1,8 @@
-{% extends "base.html" %}
+{% extends "settings/base.html" %}
 
-{% block title %}Create Identity{% endblock %}
+{% block subtitle %}Create Identity{% endblock %}
 
-{% block content %}
+{% block settings_content %}
     {% if no_valid_domains %}
         {% if user.admin %}
             <section class="icon-menu">

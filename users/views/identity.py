@@ -294,6 +294,7 @@ class IdentitySearch(FormView):
 @method_decorator(login_required, name="dispatch")
 class CreateIdentity(FormView):
     template_name = "identity/create.html"
+    extra_context = {"section": "create"}
 
     class form_class(forms.Form):
         username = forms.CharField(
@@ -403,4 +404,5 @@ class CreateIdentity(FormView):
         context["user"] = self.request.user
         if len(context["form"].fields["domain"].choices) == 0:
             context["no_valid_domains"] = True
+        context["identities"] = self.request.user.identities.all()
         return context

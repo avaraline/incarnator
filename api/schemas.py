@@ -1,11 +1,11 @@
 from typing import Literal, Optional, Union
 
 from django.conf import settings
-from hatchway import Field, Schema
 
 from activities import models as activities_models
 from api import models as api_models
 from core.html import FediverseHtmlParser
+from hatchway import Field, Schema
 from users import models as users_models
 from users.services import IdentityService
 

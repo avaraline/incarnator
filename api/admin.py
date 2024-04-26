@@ -10,4 +10,4 @@ class ApplicationAdmin(admin.ModelAdmin):
 
 @admin.register(Token)
 class TokenAdmin(admin.ModelAdmin):
-    list_display = ["id", "user", "application", "created"]
+    list_display = ["id", "user", "identity", "application", "created"]

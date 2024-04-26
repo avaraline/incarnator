@@ -1,13 +1,14 @@
 import datetime
 
+import pycountry
 from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
-from hatchway import api_view
 
 from activities.models import Post
 from api import schemas
 from core.models import Config
+from hatchway import api_view
 from takahe import __version__
 from users.models import Domain, Identity
 
@@ -182,3 +183,16 @@ def activity(request) -> list:
             week_start -= datetime.timedelta(days=7)
         cache.set("instance_activity_stats", stats, timeout=300)
     return stats
+
+
+@api_view.get
+def languages(request) -> list:
+    languages = cache.get("instance_languages")
+    if languages is None:
+        languages = [
+            {"code": lang.alpha_2, "name": lang.name.split("(")[0]}
+            for lang in pycountry.languages
+            if hasattr(lang, "alpha_2")
+        ]
+        cache.set("instance_languages", languages, timeout=3600)
+    return languages

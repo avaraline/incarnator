@@ -286,7 +286,6 @@ class ApiView:
             return ApiResponse(
                 {"error": "invalid_input", "error_details": error.errors()},
                 status=400,
-                finalize=True,
             )
         kwargs = {
             name: getattr(model_instance, name)
@@ -303,16 +302,10 @@ class ApiView:
         except TypeError as error:
             # TODO: Handle this better by inspecting for default values on the view
             if "required positional argument" in str(error):
-                return ApiResponse(
-                    {"error": "invalid_input"},
-                    status=400,
-                    finalize=True,
-                )
+                return ApiResponse({"error": "invalid_input"}, status=400)
             raise
         except ApiError as error:
-            return ApiResponse(
-                {"error": error.error}, status=error.status, finalize=True
-            )
+            return ApiResponse({"error": error.error}, status=error.status)
         # If it's not an ApiResponse, make it one
         if not isinstance(response, ApiResponse):
             response = ApiResponse(response)
@@ -321,7 +314,6 @@ class ApiView:
             response.data = self.output_model(value=response.data).model_dump()["value"]
         elif isinstance(response.data, BaseModel):
             response.data = response.data.model_dump()
-        response.finalize()
         return response
 
 
