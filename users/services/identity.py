@@ -7,7 +7,6 @@ from django.template.defaultfilters import linebreaks_filter
 from activities.models import (
     FanOut,
     Hashtag,
-    HashtagStates,
     Post,
     PostInteraction,
     PostInteractionStates,
@@ -256,10 +255,7 @@ class IdentityService:
     def sync_tags(self, tags):
         featured = []
         for name in tags:
-            hashtag, _ = Hashtag.objects.get_or_create(
-                hashtag=name[: Hashtag.MAXIMUM_LENGTH]
-            )
-            hashtag.transition_perform(HashtagStates.outdated)
+            hashtag = Hashtag.ensure_hashtag(name)
             self.identity.hashtag_features.get_or_create(hashtag=hashtag)
             featured.append(hashtag)
         self.identity.hashtag_features.exclude(hashtag__in=featured).delete()

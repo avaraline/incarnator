@@ -21,7 +21,7 @@ from pyld.jsonld import JsonLdError
 
 from activities.models.emoji import Emoji
 from activities.models.fan_out import FanOut
-from activities.models.hashtag import Hashtag, HashtagStates
+from activities.models.hashtag import Hashtag
 from activities.models.post_types import (
     PostTypeData,
     PostTypeDataDecoder,
@@ -609,10 +609,7 @@ class Post(StatorModel):
         # Ensure hashtags
         if self.hashtags:
             for hashtag in self.hashtags:
-                tag, _ = Hashtag.objects.get_or_create(
-                    hashtag=hashtag[: Hashtag.MAXIMUM_LENGTH],
-                )
-                tag.transition_perform(HashtagStates.outdated)
+                Hashtag.ensure_hashtag(hashtag)
 
     def calculate_stats(self, save=True):
         """

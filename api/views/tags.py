@@ -4,7 +4,7 @@ from django.http import HttpRequest
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
-from activities.models import Hashtag, HashtagStates, Post
+from activities.models import Hashtag, Post
 from api import schemas
 from api.decorators import scope_required
 from api.pagination import MastodonPaginator, PaginatingApiResponse, PaginationResult
@@ -99,11 +99,8 @@ def featured_tags(request) -> list[schemas.FeaturedTag]:
 @scope_required("write:accounts")
 @api_view.post
 def feature_tag(request, name: QueryOrBody[str]) -> schemas.FeaturedTag:
-    tag, created = Hashtag.objects.get_or_create(
-        hashtag=name.strip().lower()[: Hashtag.MAXIMUM_LENGTH]
-    )
-    feature, _ = request.identity.hashtag_features.get_or_create(hashtag=tag)
-    tag.transition_perform(HashtagStates.outdated)
+    tag = Hashtag.ensure_hashtag(name)
+    feature = request.identity.hashtag_features.get_or_create(hashtag=tag)[0]
     return schemas.FeaturedTag.from_feature(feature)
 
 

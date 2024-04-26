@@ -2,7 +2,7 @@ import re
 from datetime import date, timedelta
 
 import urlman
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from core.models import Config
@@ -164,26 +164,80 @@ class Hashtag(StatorModel):
         return dict(sorted(results.items(), reverse=True)[:num])
 
     @classmethod
+    def ensure_hashtag(cls, name):
+        """
+        Properly strips/trims/lowercases the hashtag name, and makes sure a Hashtag
+        object exists in the database, and returns it.
+        """
+        name = name.strip().lstrip("#").lower()[: Hashtag.MAXIMUM_LENGTH]
+        hashtag, created = cls.objects.get_or_create(hashtag=name)
+        if created:
+            hashtag.transition_perform(HashtagStates.outdated)
+        return hashtag
+
+    @classmethod
     def handle_add_ap(cls, data):
         """
-        Handles an incoming Add activity
+        Handles an incoming Add activity - sent when someone features a Hashtag.
+
+        {
+            "type": "Add",
+            "actor": "https://hachyderm.io/users/dcw",
+            "object": {
+                "href": "https://hachyderm.io/@dcw/tagged/incarnator",
+                "name": "#incarnator",
+                "type": "Hashtag",
+            },
+            "target": "https://hachyderm.io/users/dcw/collections/featured",
+        }
         """
-        print("Hashtag.handle_add_ap:", data)
+
+        from users.models import Identity
 
         target = data.get("target", None)
         if not target:
             return
+
+        with transaction.atomic():
+            identity = Identity.by_actor_uri(data["actor"], create=True)
+            # Featured tags target the featured collection URI, same as pinned posts.
+            if identity.featured_collection_uri != target:
+                return
+
+            tag = Hashtag.ensure_hashtag(data["object"]["name"])
+            return identity.hashtag_features.get_or_create(hashtag=tag)[0]
 
     @classmethod
     def handle_remove_ap(cls, data):
         """
-        Handles an incoming Remove activity
+        Handles an incoming Remove activity - sent when someone unfeatures a Hashtag.
+
+        {
+            "type": "Remove",
+            "actor": "https://hachyderm.io/users/dcw",
+            "object": {
+                "href": "https://hachyderm.io/@dcw/tagged/netneutrality",
+                "name": "#netneutrality",
+                "type": "Hashtag",
+            },
+            "target": "https://hachyderm.io/users/dcw/collections/featured",
+        }
         """
-        print("Hashtag.handle_remove_ap:", data)
+
+        from users.models import Identity
 
         target = data.get("target", None)
         if not target:
             return
+
+        with transaction.atomic():
+            identity = Identity.by_actor_uri(data["actor"], create=True)
+            # Featured tags target the featured collection URI, same as pinned posts.
+            if identity.featured_collection_uri != target:
+                return
+
+            tag = Hashtag.ensure_hashtag(data["object"]["name"])
+            identity.hashtag_features.filter(hashtag=tag).delete()
 
     def to_ap(self):
         return {
