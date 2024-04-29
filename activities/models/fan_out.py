@@ -263,6 +263,7 @@ class FanOutStates(StateGraph):
                 pass
 
             case (FanOut.Types.tag_featured, False):
+                identity = instance.subject_identity
                 try:
                     identity.signed_request(
                         method="post",
@@ -272,7 +273,7 @@ class FanOutStates(StateGraph):
                         ),
                         body=canonicalise(
                             instance.subject_hashtag.to_add_ap(
-                                instance.subject_identity,
+                                identity,
                                 domain=instance.identity.domain,
                             )
                         ),
@@ -284,6 +285,7 @@ class FanOutStates(StateGraph):
                 pass
 
             case (FanOut.Types.tag_unfeatured, False):
+                identity = instance.subject_identity
                 try:
                     identity.signed_request(
                         method="post",
@@ -293,7 +295,7 @@ class FanOutStates(StateGraph):
                         ),
                         body=canonicalise(
                             instance.subject_hashtag.to_remove_ap(
-                                instance.subject_identity,
+                                identity,
                                 domain=instance.identity.domain,
                             )
                         ),
