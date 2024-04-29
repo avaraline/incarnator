@@ -103,7 +103,7 @@ def featured_tags(request) -> list[schemas.FeaturedTag]:
 @api_view.post
 def feature_tag(request, name: QueryOrBody[str]) -> schemas.FeaturedTag:
     tag = Hashtag.ensure_hashtag(name)
-    feature, created = request.identity.hashtag_features.get_or_create(hashtag=tag)[0]
+    feature, created = request.identity.hashtag_features.get_or_create(hashtag=tag)
     if created:
         for target in feature.get_targets():
             FanOut.objects.create(
