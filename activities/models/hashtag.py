@@ -172,8 +172,7 @@ class Hashtag(StatorModel):
         """
         name = name.strip().lstrip("#").lower()[: Hashtag.MAXIMUM_LENGTH]
         hashtag, created = cls.objects.get_or_create(hashtag=name)
-        if created:
-            hashtag.transition_perform(HashtagStates.outdated)
+        hashtag.transition_perform(HashtagStates.outdated)
         return hashtag
 
     @classmethod
@@ -246,6 +245,28 @@ class Hashtag(StatorModel):
             "type": "Hashtag",
             "href": f"https://{hostname}/tags/{self.hashtag}/",
             "name": "#" + self.hashtag,
+        }
+
+    def to_add_ap(self, identity, domain=None):
+        """
+        Returns the AP JSON to add a featured tag to the given identity.
+        """
+        return {
+            "type": "Add",
+            "actor": identity.actor_uri,
+            "target": identity.actor_uri + "collections/featured/",
+            "object": self.to_ap(domain=domain),
+        }
+
+    def to_remove_ap(self, identity, domain=None):
+        """
+        Returns the AP JSON to remove a featured tag from the given identity.
+        """
+        return {
+            "type": "Remove",
+            "actor": identity.actor_uri,
+            "target": identity.actor_uri + "collections/featured/",
+            "object": self.to_ap(domain=domain),
         }
 
     def to_mastodon_json(self, following: bool | None = None, domain=None):

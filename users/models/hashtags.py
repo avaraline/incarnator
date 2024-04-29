@@ -77,6 +77,47 @@ class HashtagFeature(models.Model):
     def __str__(self):
         return f"#{self.id}: {self.identity} → {self.hashtag_id}"
 
+    def get_targets(self):
+        """
+        Returns an iterable with Identities of followers that have unique
+        shared_inbox among each other to be used as target.
+        """
+        targets = set(
+            follow.source
+            for follow in self.identity.inbound_follows.active().select_related(
+                "source"
+            )
+        )
+
+        # Fetch the full blocks and remove them as targets
+        for block in (
+            self.identity.outbound_blocks.active()
+            .filter(mute=False)
+            .select_related("target")
+        ):
+            try:
+                targets.remove(block.target)
+            except KeyError:
+                pass
+
+        deduped_targets = set()
+        shared_inboxes = set()
+        for target in targets:
+            if target.local:
+                # Local targets always gets the boosts
+                # despite its creator locality
+                deduped_targets.add(target)
+            elif self.identity.local:
+                # Dedupe the targets based on shared inboxes
+                # (we only keep one per shared inbox)
+                if not target.shared_inbox_uri:
+                    deduped_targets.add(target)
+                elif target.shared_inbox_uri not in shared_inboxes:
+                    shared_inboxes.add(target.shared_inbox_uri)
+                    deduped_targets.add(target)
+
+        return deduped_targets
+
     def to_mastodon_json(self, domain=None):
         return {
             "id": str(self.pk),

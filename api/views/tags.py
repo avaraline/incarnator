@@ -4,7 +4,7 @@ from django.http import HttpRequest
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
-from activities.models import Hashtag, Post
+from activities.models import FanOut, Hashtag, Post
 from api import schemas
 from api.decorators import scope_required
 from api.pagination import MastodonPaginator, PaginatingApiResponse, PaginationResult
@@ -103,14 +103,30 @@ def featured_tags(request) -> list[schemas.FeaturedTag]:
 @api_view.post
 def feature_tag(request, name: QueryOrBody[str]) -> schemas.FeaturedTag:
     tag = Hashtag.ensure_hashtag(name)
-    feature = request.identity.hashtag_features.get_or_create(hashtag=tag)[0]
+    feature, created = request.identity.hashtag_features.get_or_create(hashtag=tag)[0]
+    if created:
+        for target in feature.get_targets():
+            FanOut.objects.create(
+                type=FanOut.Types.tag_featured,
+                identity=target,
+                subject_identity=feature.identity,
+                subject_hashtag=feature.hashtag,
+            )
     return schemas.FeaturedTag.from_feature(feature, domain=request.domain)
 
 
 @scope_required("write:accounts")
 @api_view.delete
 def unfeature_tag(request, id: str) -> dict:
-    request.identity.hashtag_features.filter(pk=id).delete()
+    for feature in request.identity.hashtag_features.filter(pk=id):
+        for target in feature.get_targets():
+            FanOut.objects.create(
+                type=FanOut.Types.tag_unfeatured,
+                identity=target,
+                subject_identity=feature.identity,
+                subject_hashtag=feature.hashtag,
+            )
+        feature.delete()
     return {}
 
 
