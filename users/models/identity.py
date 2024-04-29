@@ -128,7 +128,14 @@ class IdentityStates(StateGraph):
             PostStates,
             TimelineEvent,
         )
-        from users.models import Bookmark, Follow, FollowStates, HashtagFollow, Report
+        from users.models import (
+            Bookmark,
+            Follow,
+            FollowStates,
+            HashtagFeature,
+            HashtagFollow,
+            Report,
+        )
 
         if not instance.local:
             return cls.updated
@@ -137,6 +144,7 @@ class IdentityStates(StateGraph):
         TimelineEvent.objects.filter(identity=instance).delete()
         Bookmark.objects.filter(identity=instance).delete()
         HashtagFollow.objects.filter(identity=instance).delete()
+        HashtagFeature.objects.filter(identity=instance).delete()
         Report.objects.filter(source_identity=instance).delete()
         # Nullify all fields and fanout
         instance.name = ""
