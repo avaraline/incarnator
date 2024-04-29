@@ -352,9 +352,7 @@ def test_handle_add_ap(remote_identity: Identity, config_system):
     )
 
     # successfully add a pin interaction
-    PostInteraction.handle_add_ap(
-        data=add_ap,
-    )
+    PostInteraction.handle_add_ap(data=add_ap)
     assert (
         PostInteraction.objects.filter(
             type=PostInteraction.Types.pin, post=post
@@ -363,9 +361,7 @@ def test_handle_add_ap(remote_identity: Identity, config_system):
     )
 
     # second identical Add activity is a no-op
-    PostInteraction.handle_add_ap(
-        data=add_ap,
-    )
+    PostInteraction.handle_add_ap(data=add_ap)
     assert (
         PostInteraction.objects.filter(
             type=PostInteraction.Types.pin, post=post
@@ -431,9 +427,7 @@ def test_handle_remove_ap(remote_identity: Identity, config_system):
     assert initial_state == interaction.state
 
     # successfully remove a pin interaction
-    PostInteraction.handle_remove_ap(
-        data=remove_ap,
-    )
+    PostInteraction.handle_remove_ap(data=remove_ap)
     interaction.refresh_from_db()
     assert interaction.state == PostInteractionStates.undone_fanned_out
 

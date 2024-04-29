@@ -324,6 +324,36 @@ class FeaturedCollection(View):
         )
 
 
+class FeaturedTags(View):
+    """
+    An ordered collection of all pinned hashtags of an identity
+    """
+
+    def get(self, request, handle):
+        self.identity = by_handle_or_404(
+            request,
+            handle,
+            local=False,
+            fetch=True,
+        )
+        if not self.identity.local:
+            raise Http404("Not a local identity")
+        tags = list(self.identity.hashtag_features.select_related("hashtag"))
+        return JsonResponse(
+            canonicalise(
+                {
+                    "type": "OrderedCollection",
+                    "id": self.identity.actor_uri + "collections/tags/",
+                    "totalItems": len(tags),
+                    "orderedItems": [
+                        tag.hashtag.to_ap(domain=request.domain) for tag in tags
+                    ],
+                }
+            ),
+            content_type="application/activity+json",
+        )
+
+
 @method_decorator(cache_control(max_age=60 * 15), name="dispatch")
 class EmptyOutbox(StaticContentView):
     """

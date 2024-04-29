@@ -1,11 +1,10 @@
 from typing import Literal
 
-from hatchway import Field, api_view
-
 from activities.models import PostInteraction
 from activities.services.search import SearchService
 from api import schemas
 from api.decorators import scope_required
+from hatchway import Field, api_view
 
 
 @scope_required("read")
@@ -42,7 +41,8 @@ def search(
         ]
     if type is None or type == "hashtag":
         result["hashtags"] = [
-            schemas.Tag.from_hashtag(h) for h in search_result["hashtags"]
+            schemas.Tag.from_hashtag(h, domain=request.domain)
+            for h in search_result["hashtags"]
         ]
     if type is None or type == "statuses":
         interactions = PostInteraction.get_post_interactions(

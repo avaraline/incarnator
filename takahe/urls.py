@@ -262,6 +262,7 @@ urlpatterns = [
     path("@<handle>/inbox/", activitypub.Inbox.as_view()),
     path("@<handle>/outbox/", activitypub.Outbox.as_view()),
     path("@<handle>/collections/featured/", activitypub.FeaturedCollection.as_view()),
+    path("@<handle>/collections/tags/", activitypub.FeaturedTags.as_view()),
     path("@<handle>/rss/", identity.IdentityFeed()),
     path("@<handle>/following/", identity.IdentityFollows.as_view(inbound=False)),
     path("@<handle>/followers/", identity.IdentityFollows.as_view(inbound=True)),

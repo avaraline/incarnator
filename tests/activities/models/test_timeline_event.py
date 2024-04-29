@@ -279,7 +279,7 @@ def test_hashtag_followed(
     Ensure that a new or incoming post with a hashtag followed by a local entity
     results in a timeline event, unless the author is blocked.
     """
-    hashtag = Hashtag.objects.get_or_create(hashtag="takahe")[0]
+    hashtag = Hashtag.ensure_hashtag("takahe")
     identity.hashtag_follows.get_or_create(hashtag=hashtag)
 
     if local:

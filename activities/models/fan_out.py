@@ -259,6 +259,42 @@ class FanOutStates(StateGraph):
                     new_identity=instance.subject_identity,
                 )
 
+            case (FanOut.Types.tag_featured, True):
+                pass
+
+            case (FanOut.Types.tag_featured, False):
+                identity = instance.subject_identity
+                try:
+                    identity.signed_request(
+                        method="post",
+                        uri=(
+                            instance.identity.shared_inbox_uri
+                            or instance.identity.inbox_uri
+                        ),
+                        body=canonicalise(instance.subject_hashtag.to_add_ap(identity)),
+                    )
+                except httpx.RequestError:
+                    return
+
+            case (FanOut.Types.tag_unfeatured, True):
+                pass
+
+            case (FanOut.Types.tag_unfeatured, False):
+                identity = instance.subject_identity
+                try:
+                    identity.signed_request(
+                        method="post",
+                        uri=(
+                            instance.identity.shared_inbox_uri
+                            or instance.identity.inbox_uri
+                        ),
+                        body=canonicalise(
+                            instance.subject_hashtag.to_remove_ap(identity)
+                        ),
+                    )
+                except httpx.RequestError:
+                    return
+
             case _:
                 raise ValueError(
                     f"Cannot fan out with type {instance.type} local={instance.identity.local}"
@@ -282,6 +318,8 @@ class FanOut(StatorModel):
         identity_deleted = "identity_deleted"
         identity_created = "identity_created"
         identity_moved = "identity_moved"
+        tag_featured = "tag_featured"
+        tag_unfeatured = "tag_unfeatured"
 
     state = StateField(FanOutStates)
 
@@ -319,6 +357,13 @@ class FanOut(StatorModel):
         blank=True,
         null=True,
         related_name="subject_fan_outs",
+    )
+    subject_hashtag = models.ForeignKey(
+        "activities.Hashtag",
+        on_delete=models.CASCADE,
+        blank=True,
+        null=True,
+        related_name="fan_outs",
     )
 
     created = models.DateTimeField(auto_now_add=True)

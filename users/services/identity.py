@@ -4,7 +4,13 @@ from django.core.exceptions import MultipleObjectsReturned
 from django.db import models, transaction
 from django.template.defaultfilters import linebreaks_filter
 
-from activities.models import FanOut, Post, PostInteraction, PostInteractionStates
+from activities.models import (
+    FanOut,
+    Hashtag,
+    Post,
+    PostInteraction,
+    PostInteractionStates,
+)
 from core.files import resize_image
 from core.html import FediverseHtmlParser
 from stator.exceptions import TryAgainLater
@@ -245,6 +251,15 @@ class IdentityService:
             ).exclude(post__object_uri__in=object_uris):
                 removed.transition_perform(PostInteractionStates.undone_fanned_out)
 
+    @transaction.atomic
+    def sync_tags(self, tags):
+        featured = []
+        for name in tags:
+            hashtag = Hashtag.ensure_hashtag(name)
+            self.identity.hashtag_features.get_or_create(hashtag=hashtag)
+            featured.append(hashtag)
+        self.identity.hashtag_features.exclude(hashtag__in=featured).delete()
+
     def mastodon_json_relationship(self, from_identity: Identity):
         """
         Returns a Relationship object for the from_identity's relationship
@@ -340,10 +355,25 @@ class IdentityService:
             "identity": "90310938129083",
         }
         """
-        # Retrieve ourselves
         actor = Identity.objects.get(pk=payload["identity"])
         self = cls(actor)
-        # Get the remote end (may need a fetch)
         if actor.featured_collection_uri:
             featured = actor.fetch_pinned_post_uris(actor.featured_collection_uri)
             self.sync_pins(featured)
+
+    @classmethod
+    def handle_internal_sync_tags(cls, payload):
+        """
+        Handles an inbox message saying we need to sync featured tags
+
+        Message format:
+        {
+            "type": "SyncTags",
+            "identity": "90310938129083",
+        }
+        """
+        actor = Identity.objects.get(pk=payload["identity"])
+        self = cls(actor)
+        if actor.featured_tags_uri:
+            tags = actor.fetch_featured_tags(actor.featured_tags_uri)
+            self.sync_tags(tags)
