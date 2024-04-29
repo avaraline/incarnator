@@ -247,7 +247,7 @@ class Hashtag(StatorModel):
             "name": "#" + self.hashtag,
         }
 
-    def to_add_ap(self, identity, domain=None):
+    def to_add_ap(self, identity):
         """
         Returns the AP JSON to add a featured tag to the given identity.
         """
@@ -255,10 +255,10 @@ class Hashtag(StatorModel):
             "type": "Add",
             "actor": identity.actor_uri,
             "target": identity.actor_uri + "collections/featured/",
-            "object": self.to_ap(domain=domain),
+            "object": self.to_ap(domain=identity.domain),
         }
 
-    def to_remove_ap(self, identity, domain=None):
+    def to_remove_ap(self, identity):
         """
         Returns the AP JSON to remove a featured tag from the given identity.
         """
@@ -266,7 +266,7 @@ class Hashtag(StatorModel):
             "type": "Remove",
             "actor": identity.actor_uri,
             "target": identity.actor_uri + "collections/featured/",
-            "object": self.to_ap(domain=domain),
+            "object": self.to_ap(domain=identity.domain),
         }
 
     def to_mastodon_json(self, following: bool | None = None, domain=None):

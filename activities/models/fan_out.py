@@ -271,12 +271,7 @@ class FanOutStates(StateGraph):
                             instance.identity.shared_inbox_uri
                             or instance.identity.inbox_uri
                         ),
-                        body=canonicalise(
-                            instance.subject_hashtag.to_add_ap(
-                                identity,
-                                domain=instance.identity.domain,
-                            )
-                        ),
+                        body=canonicalise(instance.subject_hashtag.to_add_ap(identity)),
                     )
                 except httpx.RequestError:
                     return
@@ -294,10 +289,7 @@ class FanOutStates(StateGraph):
                             or instance.identity.inbox_uri
                         ),
                         body=canonicalise(
-                            instance.subject_hashtag.to_remove_ap(
-                                identity,
-                                domain=instance.identity.domain,
-                            )
+                            instance.subject_hashtag.to_remove_ap(identity)
                         ),
                     )
                 except httpx.RequestError:
