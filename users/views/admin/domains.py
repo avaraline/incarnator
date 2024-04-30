@@ -29,7 +29,7 @@ class DomainValidator(RegexValidator):
         r"(?<!-)"  # can't end with a dash
         r"\.?"  # may have a trailing dot
     )
-    port_re = r"(?:\:\d+)"
+    port_re = r"(\:\d+)?"
     regex = "^" + hostname_re + domain_re + tld_re + port_re + "$"
     message = "This does not look like a domain name"
 

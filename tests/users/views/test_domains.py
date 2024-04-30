@@ -13,6 +13,7 @@ VALID_DOMAINS = [
     "example.com",
     "www.example.com",
     "example.co.uk",
+    "alektra.local:8000",
 ]
 
 INVALID_DOMAINS = [
