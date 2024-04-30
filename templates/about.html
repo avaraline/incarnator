@@ -4,7 +4,7 @@
 
 {% block content %}
     <section class="markdown">
-        <img class="banner" src="{{ config.site_banner }}">
+        <img class="banner" src="{{ config_domain.site_banner|default_if_none:config.site_banner }}">
         {{ content }}
     </section>
 

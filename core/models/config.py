@@ -188,14 +188,16 @@ class Config(models.Model):
         )
 
     class SystemOptions(pydantic.BaseModel):
+        system_name: str = "Incarnator"
+        system_link: str = "https://github.com/avaraline/incarnator"
         version: str = __version__
 
         system_actor_public_key: str = ""
         system_actor_private_key: str = ""
 
-        site_name: str = "Takahē"
+        site_name: str = "Incarnator"
         highlight_color: str = "#449c8c"
-        site_about: str = "<h2>Welcome!</h2>\n\nThis is a community running Takahē."
+        site_about: str = "<h2>Welcome!</h2>\n\nThis is a community running Incarnator."
         site_frontpage_posts: bool = True
         site_icon: UploadedImage = StaticAbsoluteUrl("img/icon-128.png").relative  # type: ignore
         site_banner: UploadedImage = StaticAbsoluteUrl(
@@ -251,6 +253,7 @@ class Config(models.Model):
     class DomainOptions(pydantic.BaseModel):
         site_name: str = ""
         site_icon: UploadedImage | None = None
+        site_banner: UploadedImage | None = None
         hide_login: bool = False
         custom_css: str = ""
         single_user: str = ""

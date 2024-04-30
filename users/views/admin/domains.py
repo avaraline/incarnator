@@ -29,7 +29,8 @@ class DomainValidator(RegexValidator):
         r"(?<!-)"  # can't end with a dash
         r"\.?"  # may have a trailing dot
     )
-    regex = "^" + hostname_re + domain_re + tld_re + "$"
+    port_re = r"(?:\:\d+)"
+    regex = "^" + hostname_re + domain_re + tld_re + port_re + "$"
     message = "This does not look like a domain name"
 
 
@@ -168,6 +169,11 @@ class DomainEdit(FormView):
             help_text="Override the site icon for this domain",
         )
 
+        site_banner = forms.ImageField(
+            required=False,
+            help_text="Override the site banner for this domain",
+        )
+
         hide_login = forms.BooleanField(
             help_text="If the login button should appear in the header for this domain",
             widget=forms.Select(choices=[(False, "Show"), (True, "Hide")]),
@@ -222,10 +228,19 @@ class DomainEdit(FormView):
             Domain.objects.exclude(pk=self.domain.pk).update(default=False)
         Config.set_domain(self.domain, "hide_login", form.cleaned_data["hide_login"])
         Config.set_domain(self.domain, "site_name", form.cleaned_data["site_name"])
+
         if self.request.POST.get("site_icon__clear"):
             Config.set_domain(self.domain, "site_icon", None)
         if isinstance(form.cleaned_data["site_icon"], File):
             Config.set_domain(self.domain, "site_icon", form.cleaned_data["site_icon"])
+
+        if self.request.POST.get("site_banner__clear"):
+            Config.set_domain(self.domain, "site_banner", None)
+        if isinstance(form.cleaned_data["site_banner"], File):
+            Config.set_domain(
+                self.domain, "site_banner", form.cleaned_data["site_banner"]
+            )
+
         Config.set_domain(self.domain, "custom_css", form.cleaned_data["custom_css"])
         Config.set_domain(self.domain, "single_user", form.cleaned_data["single_user"])
         messages.success(self.request, f"Domain {self.domain} saved.")
@@ -241,6 +256,7 @@ class DomainEdit(FormView):
             "users": "\n".join(sorted(user.email for user in self.domain.users.all())),
             "site_name": self.domain.config_domain.site_name,
             "site_icon": self.domain.config_domain.site_icon,
+            "site_banner": self.domain.config_domain.site_banner,
             "hide_login": self.domain.config_domain.hide_login,
             "custom_css": self.domain.config_domain.custom_css,
             "single_user": self.domain.config_domain.single_user,
@@ -252,9 +268,7 @@ class DomainDelete(TemplateView):
     template_name = "admin/domain_delete.html"
 
     def dispatch(self, request, domain):
-        self.domain = get_object_or_404(
-            Domain.objects.filter(public=True), domain=domain
-        )
+        self.domain = get_object_or_404(Domain, domain=domain, local=True)
         return super().dispatch(request)
 
     def get_context_data(self):

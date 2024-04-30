@@ -2,7 +2,7 @@
     {% block brand_content %}
         {%- if logo_url %}
             <div class="sidebar-logo-container">
-                <img class="sidebar-logo" src="{{ logo_url }}" alt="Takahē"/>
+                <img class="sidebar-logo" src="{{ logo_url }}" alt="{{ config.system_name }}"/>
             </div>
         {%- endif %}
         {%- if theme_light_logo and theme_dark_logo %}

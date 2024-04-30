@@ -4,5 +4,5 @@
     {% if config.policy_terms %}<a href="{% url "policy_terms" %}">Terms&nbsp;of&nbsp;Service</a>{% endif %}
     {% if config.policy_privacy %}<a href="{% url "policy_privacy" %}">Privacy&nbsp;Policy</a>{% endif %}
     {% if config.policy_issues %}<a href="{% url "policy_issues" %}">Report a Problem</a>{% endif %}
-    <a href="https://jointakahe.org">Takahē&nbsp;{{ config.version }}</a>
+    <a href="{{ config.system_link }}">{{ config.system_name }}&nbsp;{{ config.version }}</a>
 </footer>
