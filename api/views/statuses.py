@@ -4,6 +4,7 @@ from typing import Literal
 from django.http import HttpRequest
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from pydantic import ConfigDict
 
 from activities.models import (
     Post,
@@ -39,6 +40,8 @@ class PostPollSchema(Schema):
 
 
 class PostStatusSchema(Schema):
+    model_config = ConfigDict(coerce_numbers_to_str=True)
+
     status: str | None = None
     in_reply_to_id: str | None = None
     sensitive: bool = False
