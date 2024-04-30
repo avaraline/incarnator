@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import httpx
 import urlman
 from django.conf import settings
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 from django.utils.functional import lazy
@@ -105,6 +106,8 @@ class IdentityStates(StateGraph):
         if not instance.local:
             return cls.updated
 
+        # Not really necessary here, but is an easy way to force a recalculation.
+        instance.calculate_stats()
         cls.targets_fan_out(instance, FanOut.Types.identity_edited)
         return cls.updated
 
@@ -175,6 +178,7 @@ class IdentityStates(StateGraph):
     def handle_outdated(cls, identity: "Identity"):
         # Local identities never need fetching
         if identity.local:
+            identity.calculate_stats()
             return cls.updated
         # Run the actor fetch and progress to updated if it succeeds
         if identity.fetch_actor():
@@ -271,6 +275,9 @@ class Identity(StatorModel):
     # A list of other actor URIs - if this account was moved, should contain
     # the one URI it was moved to.
     aliases = models.JSONField(blank=True, null=True)
+
+    # Calculated (or fetched) statistics: follower/post counts, etc.
+    stats = models.JSONField(blank=True, null=True)
 
     # Admin-only moderation fields
     sensitive = models.BooleanField(default=False)
@@ -401,6 +408,21 @@ class Identity(StatorModel):
             self.followers_uri = self.actor_uri + "followers/"
             self.following_uri = self.actor_uri + "following/"
             self.shared_inbox_uri = f"https://{self.domain.uri_domain}/inbox/"
+
+    def calculate_stats(self, save=True):
+        try:
+            latest = format_ld_date(self.posts.latest("created").created)
+        except ObjectDoesNotExist:
+            latest = None
+        self.stats = {
+            "last_status_at": latest,
+            "statuses_count": self.posts.count(),
+            "followers_count": self.inbound_follows.count(),
+            "following_count": self.outbound_follows.count(),
+        }
+        logger.info("calculate_stats(%s): %s", self.handle, self.stats)
+        if save:
+            self.save()
 
     def add_alias(self, actor_uri: str):
         self.aliases = (self.aliases or []) + [actor_uri]
@@ -837,7 +859,7 @@ class Identity(StatorModel):
         return None, None
 
     @classmethod
-    def fetch_collection(cls, uri: str) -> list[dict]:
+    def fetch_collection(cls, uri: str, total_only=False) -> tuple[int, list[dict]]:
         with httpx.Client(
             timeout=settings.SETUP.REMOTE_TIMEOUT,
             headers={"User-Agent": settings.TAKAHE_USER_AGENT},
@@ -864,21 +886,26 @@ class Identity(StatorModel):
                         f"Client error fetching featured collection: {response.status_code}",
                         response.content,
                     )
-                return []
+                return 0, []
 
         try:
             json_data = json_from_response(response)
             data = canonicalise(json_data, include_security=True)
+            total = data.get("totalItems", 0)
+            if total_only:
+                return total, []
             # canonicalise seems to turn single-item `items` list into a dict?? gross
             if value := data.get("orderedItems"):
-                return list(reversed(value)) if isinstance(value, list) else [value]
+                items = list(reversed(value)) if isinstance(value, list) else [value]
             elif value := data.get("items"):
-                return value if isinstance(value, list) else [value]
-            return []
+                items = value if isinstance(value, list) else [value]
+            else:
+                items = []
+            return total, items
         except ValueError:
             # Some servers return these with a 200 status code!
             if b"not found" in response.content.lower():
-                return []
+                return 0, []
             raise ValueError(
                 "JSON parse error fetching collection",
                 response.content,
@@ -889,7 +916,7 @@ class Identity(StatorModel):
         """
         Fetch an identity's featured collection (pins).
         """
-        items = cls.fetch_collection(uri)
+        total, items = cls.fetch_collection(uri)
         ids = []
         for item in items:
             if not isinstance(item, dict):
@@ -903,7 +930,7 @@ class Identity(StatorModel):
         """
         Fetch an identity's featured tags.
         """
-        items = cls.fetch_collection(uri)
+        total, items = cls.fetch_collection(uri)
         names = []
         for item in items:
             if not isinstance(item, dict):
@@ -1032,6 +1059,8 @@ class Identity(StatorModel):
                 Emoji.by_ap_tag(self.domain, tag, create=True)
         # Mark as fetched
         self.fetched = timezone.now()
+        # Update the post stats
+        self.calculate_stats(save=False)
         try:
             with transaction.atomic():
                 # if we don't wrap this in its own transaction, the exception
@@ -1093,7 +1122,7 @@ class Identity(StatorModel):
             "acct": self.handle or "",
         }
 
-    def to_mastodon_json(self, source=False, include_counts=True):
+    def to_mastodon_json(self, source=False):
         from activities.models import Emoji, Post
 
         header_image = self.local_image_url()
@@ -1106,6 +1135,7 @@ class Identity(StatorModel):
             f"{self.name} {self.summary} {metadata_value_text}", self.domain
         )
         renderer = ContentRenderer(local=False)
+        stats = self.stats or {}
         result = {
             "id": str(self.pk),
             "username": self.username or "",
@@ -1140,10 +1170,10 @@ class Identity(StatorModel):
             "created_at": format_ld_date(
                 self.created.replace(hour=0, minute=0, second=0, microsecond=0)
             ),
-            "last_status_at": None,  # TODO: populate
-            "statuses_count": self.posts.count() if include_counts else 0,
-            "followers_count": self.inbound_follows.count() if include_counts else 0,
-            "following_count": self.outbound_follows.count() if include_counts else 0,
+            "last_status_at": stats.get("last_status_at"),
+            "statuses_count": stats.get("statuses_count", 0),
+            "followers_count": stats.get("followers_count", 0),
+            "following_count": stats.get("following_count", 0),
         }
         if source:
             privacy_map = {

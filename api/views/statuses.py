@@ -4,7 +4,6 @@ from typing import Literal
 from django.http import HttpRequest
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from hatchway import ApiError, ApiResponse, Schema, api_view
 
 from activities.models import (
     Post,
@@ -18,6 +17,7 @@ from api import schemas
 from api.decorators import scope_required
 from api.pagination import MastodonPaginator, PaginatingApiResponse, PaginationResult
 from core.models import Config
+from hatchway import ApiError, ApiResponse, Schema, api_view
 
 
 class PostPollSchema(Schema):
@@ -241,10 +241,7 @@ def favourited_by(
 
     return PaginatingApiResponse(
         [
-            schemas.Account.from_identity(
-                interaction.identity,
-                include_counts=False,
-            )
+            schemas.Account.from_identity(interaction.identity)
             for interaction in pager.results
         ],
         request=request,
@@ -283,10 +280,7 @@ def reblogged_by(
 
     return PaginatingApiResponse(
         [
-            schemas.Account.from_identity(
-                interaction.identity,
-                include_counts=False,
-            )
+            schemas.Account.from_identity(interaction.identity)
             for interaction in pager.results
         ],
         request=request,

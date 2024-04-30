@@ -36,8 +36,7 @@ def search(
         type = None
     if type is None or type == "accounts":
         result["accounts"] = [
-            schemas.Account.from_identity(i, include_counts=False)
-            for i in search_result["identities"]
+            schemas.Account.from_identity(i) for i in search_result["identities"]
         ]
     if type is None or type == "hashtag":
         result["hashtags"] = [

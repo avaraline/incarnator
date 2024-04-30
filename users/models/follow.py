@@ -3,6 +3,7 @@ from typing import Optional
 
 import httpx
 from django.db import models, transaction
+from django.db.models.signals import post_delete, post_save
 
 from core.ld import canonicalise, get_str_or_id
 from core.snowflake import Snowflake
@@ -436,3 +437,18 @@ class Follow(StatorModel):
             raise ValueError("Accept actor does not match its Follow object", data)
         # Delete the follow
         follow.transition_perform(FollowStates.pending_removal)
+
+
+def follow_created(sender, instance: Follow, created, **kwargs):
+    if created:
+        instance.source.calculate_stats()
+        instance.target.calculate_stats()
+
+
+def follow_deleted(sender, instance: Follow, **kwargs):
+    instance.source.calculate_stats()
+    instance.target.calculate_stats()
+
+
+post_save.connect(follow_created, sender=Follow, dispatch_uid="users.follow.created")
+post_delete.connect(follow_deleted, sender=Follow, dispatch_uid="users.follow.deleted")

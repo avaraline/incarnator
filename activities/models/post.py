@@ -13,6 +13,7 @@ from django.conf import settings
 from django.contrib.postgres.indexes import GinIndex
 from django.contrib.postgres.search import SearchVector
 from django.db import models, transaction
+from django.db.models.signals import post_delete, post_save
 from django.db.utils import IntegrityError
 from django.template import loader
 from django.template.defaultfilters import linebreaks_filter
@@ -1191,7 +1192,7 @@ class Post(StatorModel):
             "id": str(self.pk),
             "uri": self.object_uri,
             "created_at": format_ld_date(self.published),
-            "account": self.author.to_mastodon_json(include_counts=False),
+            "account": self.author.to_mastodon_json(),
             "content": self.safe_content_remote(),
             "language": language,
             "visibility": visibility_mapping[self.visibility],
@@ -1244,3 +1245,16 @@ class Post(StatorModel):
         if bookmarks:
             value["bookmarked"] = self.pk in bookmarks
         return value
+
+
+def post_created(sender, instance: Post, created, **kwargs):
+    if created:
+        instance.author.calculate_stats()
+
+
+def post_deleted(sender, instance: Post, **kwargs):
+    instance.author.calculate_stats()
+
+
+post_save.connect(post_created, sender=Post, dispatch_uid="activities.post.created")
+post_delete.connect(post_deleted, sender=Post, dispatch_uid="activities.post.deleted")

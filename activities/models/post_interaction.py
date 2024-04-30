@@ -562,7 +562,7 @@ class PostInteraction(StatorModel):
             "id": f"{self.pk}",
             "uri": post_json["uri"],
             "created_at": format_ld_date(self.published),
-            "account": self.identity.to_mastodon_json(include_counts=False),
+            "account": self.identity.to_mastodon_json(),
             "content": "",
             "visibility": post_json["visibility"],
             "sensitive": post_json["sensitive"],

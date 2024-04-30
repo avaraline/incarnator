@@ -80,12 +80,9 @@ class Account(Schema):
     def from_identity(
         cls,
         identity: users_models.Identity,
-        include_counts: bool = True,
         source=False,
     ) -> "Account":
-        return cls(
-            **identity.to_mastodon_json(include_counts=include_counts, source=source)
-        )
+        return cls(**identity.to_mastodon_json(source=source))
 
 
 class MediaAttachment(Schema):
@@ -327,7 +324,7 @@ class FollowedTag(Tag):
         cls,
         follow: users_models.HashtagFollow,
     ) -> "FollowedTag":
-        return cls(id=follow.id, **follow.hashtag.to_mastodon_json(following=True))
+        return cls(id=str(follow.id), **follow.hashtag.to_mastodon_json(following=True))
 
     @classmethod
     def map_from_follows(
