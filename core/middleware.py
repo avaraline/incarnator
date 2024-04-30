@@ -87,10 +87,10 @@ class ParamsMiddleware:
             return json.loads(request.body)
         # Otherwise, fall back to form data.
         params = {}
-        for key, value in request.GET.items():
-            params[key] = value
-        for key, value in request.POST.items():
-            params[key] = value
+        for key, value in request.GET.lists():
+            params[key] = value[0] if len(value) == 1 else value
+        for key, value in request.POST.lists():
+            params[key] = value[0] if len(value) == 1 else value
         return params
 
     def __call__(self, request):

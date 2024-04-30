@@ -1,14 +1,16 @@
 from django.http import HttpRequest
-from hatchway import api_view
 
 from api import schemas
 from api.decorators import scope_required
+from hatchway import api_view
 
 
 @scope_required("read:statuses")
 @api_view.get
 def markers(request: HttpRequest) -> dict[str, schemas.Marker]:
-    timelines = set(request.PARAMS.getlist("timeline[]"))
+    timelines = request.PARAMS.get("timeline[]", [])
+    if not isinstance(timelines, list):
+        timelines = [timelines]
     data = {}
     for m in request.identity.markers.filter(timeline__in=timelines):
         data[m.timeline] = schemas.Marker.from_marker(m)

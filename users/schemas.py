@@ -14,7 +14,7 @@ class NodeInfoSoftware(BaseModel):
 
 
 class NodeInfoUsage(BaseModel):
-    users: dict[str, int | None] | None
+    users: dict[str, int | None] | None = None
     local_posts: int = Field(default=0, alias="localPosts")
 
 
@@ -23,7 +23,7 @@ class NodeInfo(BaseModel):
 
     version: Literal["2.0"]
     software: NodeInfoSoftware
-    protocols: list[str] | None
+    protocols: list[str] | None = None
     open_registrations: bool = Field(alias="openRegistrations")
     usage: NodeInfoUsage
-    metadata: dict[str, Any] | None
+    metadata: dict[str, Any] | None = None
