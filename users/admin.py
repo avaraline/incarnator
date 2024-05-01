@@ -103,6 +103,9 @@ class UserAdmin(admin.ModelAdmin):
 
 @admin.register(UserEvent)
 class UserEventAdmin(admin.ModelAdmin):
+    list_display = ["user", "type", "date"]
+    autocomplete_fields = ["user"]
+
     def has_add_permission(self, request, obj=None):
         return False
 
@@ -111,7 +114,7 @@ class UserEventAdmin(admin.ModelAdmin):
 class IdentityAdmin(admin.ModelAdmin):
     list_display = ["id", "handle", "actor_uri", "state", "local"]
     list_filter = ("local", "state", "discoverable")
-    autocomplete_fields = ["users"]
+    autocomplete_fields = ["users", "domain"]
     actions = ["force_update"]
     readonly_fields = ["handle", "actor_json"]
     search_fields = ["search_handle", "search_service_handle", "name", "id"]
@@ -217,17 +220,25 @@ class InviteAdmin(admin.ModelAdmin):
 @admin.register(List)
 class ListAdmin(admin.ModelAdmin):
     list_display = ["id", "identity", "title", "replies_policy", "exclusive"]
-    autocomplete_fields = ["members"]
+    autocomplete_fields = ["identity", "members"]
 
 
 @admin.register(Marker)
 class MarkerAdmin(admin.ModelAdmin):
     list_display = ["id", "identity", "timeline", "last_read_id", "updated_at"]
+    autocomplete_fields = ["identity"]
 
 
 @admin.register(Report)
 class ReportAdmin(admin.ModelAdmin):
     list_display = ["id", "created", "resolved", "type", "subject_identity"]
+    raw_id_fields = ["subject_post"]
+    autocomplete_fields = [
+        "subject_identity",
+        "source_identity",
+        "source_domain",
+        "moderator",
+    ]
 
 
 @admin.register(Announcement)
@@ -239,4 +250,5 @@ class AnnouncementAdmin(admin.ModelAdmin):
 @admin.register(Bookmark)
 class BookmarkAdmin(admin.ModelAdmin):
     list_display = ["id", "identity", "post", "created"]
-    raw_id_fields = ["identity", "post"]
+    autocomplete_fields = ["identity"]
+    raw_id_fields = ["post"]

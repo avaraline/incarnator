@@ -1,6 +1,7 @@
 from django.conf import settings as djsettings
 from django.contrib import admin as djadmin
 from django.urls import include, path, re_path
+from django.views.generic.base import RedirectView
 
 from activities.views import compose, debug, posts, timelines
 from api.views import oauth
@@ -19,6 +20,11 @@ urlpatterns = [
         "settings/",
         settings.SettingsRoot.as_view(),
         name="settings",
+    ),
+    # Some clients assume this exists, redirect to root settings page.
+    path(
+        "settings/profile/",
+        RedirectView.as_view(pattern_name="settings"),
     ),
     path(
         "settings/security/",

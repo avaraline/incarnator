@@ -70,9 +70,8 @@ class EmojiAdmin(admin.ModelAdmin):
     )
     list_filter = ("local", "public", "state")
     search_fields = ("shortcode",)
-
     readonly_fields = ["preview", "created", "updated", "to_ap_tag"]
-
+    autocomplete_fields = ["domain"]
     actions = ["force_execution", "approve_emoji", "reject_emoji", "copy_to_local"]
 
     def delete_queryset(self, request, queryset):
@@ -122,6 +121,7 @@ class PostAttachmentAdmin(admin.ModelAdmin):
     list_filter = ["state", "mimetype"]
     search_fields = ["name", "remote_url", "search_handle", "search_service_handle"]
     raw_id_fields = ["post"]
+    autocomplete_fields = ["author"]
 
     actions = ["guess_mimetypes"]
 
@@ -194,13 +194,12 @@ class PostAdmin(admin.ModelAdmin):
 
 @admin.register(TimelineEvent)
 class TimelineEventAdmin(admin.ModelAdmin):
-    list_display = ["id", "identity", "published", "type"]
+    list_display = ["id", "identity", "type", "published"]
     list_filter = (IdentityLocalFilter, "type")
     readonly_fields = ["created"]
-    autocomplete_fields = ["identity"]
+    autocomplete_fields = ["identity", "subject_identity"]
     raw_id_fields = [
         "subject_post",
-        "subject_identity",
         "subject_post_interaction",
     ]
 
@@ -212,8 +211,12 @@ class TimelineEventAdmin(admin.ModelAdmin):
 class FanOutAdmin(admin.ModelAdmin):
     list_display = ["id", "state", "created", "state_next_attempt", "type", "identity"]
     list_filter = (IdentityLocalFilter, "type", "state")
-    raw_id_fields = ["subject_post", "subject_post_interaction"]
-    autocomplete_fields = ["identity"]
+    raw_id_fields = [
+        "subject_post",
+        "subject_post_interaction",
+        "subject_hashtag",
+    ]
+    autocomplete_fields = ["identity", "subject_identity"]
     readonly_fields = ["created", "updated", "state_changed"]
     actions = ["force_execution"]
     search_fields = ["identity__username"]
