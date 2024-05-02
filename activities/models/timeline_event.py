@@ -129,7 +129,15 @@ class TimelineEvent(models.Model):
             defaults={"published": post.published or post.created},
         )
         if created:
-            identity.notify(PushType.status, post.author, body=post.content_preview())
+            # Only send the push notification if following with the notify flag set.
+            if (
+                identity.outbound_follows.active()
+                .filter(target=post.author, notify=True)
+                .exists()
+            ):
+                identity.notify(
+                    PushType.status, post.author, body=post.content_preview()
+                )
         return event
 
     @classmethod

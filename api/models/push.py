@@ -96,9 +96,15 @@ class PushSubscription(models.Model):
             return None
         match self.policy:
             case PushPolicy.followed:
-                pass
+                if (
+                    not identity.outbound_follows.active()
+                    .filter(target=source)
+                    .exists()
+                ):
+                    return None
             case PushPolicy.follower:
-                pass
+                if not identity.inbound_follows.active().filter(source=source).exists():
+                    return None
             case PushPolicy.none:
                 return None
         if title is None:
