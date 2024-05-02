@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from api.models import Application, Token
+from api.models import Application, PushNotification, PushSubscription, Token
 
 
 @admin.register(Application)
@@ -9,7 +9,20 @@ class ApplicationAdmin(admin.ModelAdmin):
     search_fields = ["name", "website"]
 
 
+class PushSubscriptionInline(admin.TabularInline):
+    model = PushSubscription
+    extra = 0
+
+
 @admin.register(Token)
 class TokenAdmin(admin.ModelAdmin):
     list_display = ["id", "user", "identity", "application", "created"]
     autocomplete_fields = ["user", "identity", "application"]
+    inlines = [PushSubscriptionInline]
+
+
+@admin.register(PushNotification)
+class PushNotificationAdmin(admin.ModelAdmin):
+    list_display = ["id", "token", "type", "title", "body", "state"]
+    list_filter = ["state"]
+    raw_id_fields = ["token"]

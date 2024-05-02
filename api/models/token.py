@@ -1,21 +1,10 @@
+from typing import TYPE_CHECKING
+
 import urlman
 from django.db import models
-from pydantic import BaseModel
 
-
-class PushSubscriptionSchema(BaseModel):
-    """
-    Basic validating schema for push data
-    """
-
-    class Keys(BaseModel):
-        p256dh: str
-        auth: str
-
-    endpoint: str
-    keys: Keys
-    alerts: dict[str, bool]
-    policy: str
+if TYPE_CHECKING:
+    from .push import PushSubscription
 
 
 class Token(models.Model):
@@ -54,10 +43,13 @@ class Token(models.Model):
     updated = models.DateTimeField(auto_now=True)
     revoked = models.DateTimeField(blank=True, null=True)
 
-    push_subscription = models.JSONField(blank=True, null=True)
+    push_subscription: "PushSubscription"
 
     class urls(urlman.Urls):
         edit = "/@{self.identity.handle}/settings/tokens/{self.id}/"
+
+    def __str__(self):
+        return f"{self.identity} - {self.application} (#{self.pk})"
 
     def has_scope(self, scope: str):
         """
@@ -68,7 +60,23 @@ class Token(models.Model):
         scope_prefix = scope.split(":")[0]
         return (scope in self.scopes) or (scope_prefix in self.scopes)
 
-    def set_push_subscription(self, data: dict):
-        # Validate schema and assign
-        self.push_subscription = PushSubscriptionSchema(**data).model_dump()
-        self.save()
+    def subscribe(
+        self,
+        endpoint: str,
+        keys: dict,
+        alerts: dict,
+        policy: str,
+    ) -> "PushSubscription":
+        from .push import PushSubscription
+
+        try:
+            self.push_subscription.delete()
+        except PushSubscription.DoesNotExist:
+            pass
+        return PushSubscription.objects.create(
+            token=self,
+            endpoint=endpoint,
+            keys=keys,
+            alerts=alerts,
+            policy=policy,
+        )

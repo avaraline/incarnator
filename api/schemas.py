@@ -1,7 +1,5 @@
 from typing import Literal, Optional, Union
 
-from django.conf import settings
-
 from activities import models as activities_models
 from api import models as api_models
 from core.html import FediverseHtmlParser
@@ -517,13 +515,9 @@ class PushSubscription(Schema):
         cls,
         token: api_models.Token,
     ) -> Optional["PushSubscription"]:
-        value = token.push_subscription
-        if value:
-            value["id"] = "1"
-            value["server_key"] = settings.SETUP.VAPID_PUBLIC_KEY
-            del value["keys"]
-            return value
-        else:
+        try:
+            return cls(**token.push_subscription.to_mastodon_json())
+        except api_models.PushSubscription.DoesNotExist:
             return None
 
 

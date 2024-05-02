@@ -7,6 +7,10 @@
 #   all-features: false
 #   with-sources: false
 
+aiohttp==3.9.5
+    # via pywebpush
+aiosignal==1.3.1
+    # via aiohttp
 annotated-types==0.6.0
     # via pydantic
 anyio==4.3.0
@@ -15,6 +19,8 @@ asgiref==3.8.1
     # via django
     # via django-cors-headers
     # via django-htmx
+attrs==23.2.0
+    # via aiohttp
 blurhash-python==1.2.2
 boto3==1.34.91
     # via django-storages
@@ -39,6 +45,9 @@ charset-normalizer==3.3.2
 click==8.1.7
     # via uvicorn
 cryptography==42.0.5
+    # via http-ece
+    # via py-vapid
+    # via pywebpush
 distlib==0.3.8
     # via virtualenv
 dj-database-url==2.1.0
@@ -61,6 +70,9 @@ filelock==3.13.4
     # via virtualenv
 frozendict==2.4.2
     # via pyld
+frozenlist==1.4.1
+    # via aiohttp
+    # via aiosignal
 google-api-core==2.18.0
     # via google-cloud-core
     # via google-cloud-storage
@@ -83,6 +95,8 @@ gunicorn==22.0.0
 h11==0.14.0
     # via httpcore
     # via uvicorn
+http-ece==1.2.0
+    # via pywebpush
 httpcore==1.0.5
     # via httpx
 httpx==0.27.0
@@ -94,6 +108,7 @@ idna==3.7
     # via email-validator
     # via httpx
     # via requests
+    # via yarl
 iniconfig==2.0.0
     # via pytest
 jmespath==1.0.1
@@ -105,6 +120,9 @@ markdown-it-py==3.0.0
 mdurl==0.1.2
     # via markdown-it-py
 mock==5.1.0
+multidict==6.0.5
+    # via aiohttp
+    # via yarl
 nodeenv==1.8.0
     # via pre-commit
 packaging==24.0
@@ -126,6 +144,8 @@ protobuf==4.25.3
 psycopg==3.1.18
 psycopg-binary==3.1.18
     # via psycopg
+py-vapid==1.9.0
+    # via pywebpush
 pyasn1==0.6.0
     # via pyasn1-modules
     # via rsa
@@ -155,12 +175,14 @@ python-dateutil==2.9.0.post0
 python-dotenv==1.0.1
     # via pydantic-settings
     # via pytest-dotenv
+pywebpush==2.0.0
 pyyaml==6.0.1
     # via pre-commit
 redis==5.0.4
 requests==2.31.0
     # via google-api-core
     # via google-cloud-storage
+    # via pywebpush
 rsa==4.9
     # via google-auth
 s3transfer==0.10.1
@@ -171,6 +193,7 @@ setuptools==69.5.1
 six==1.16.0
     # via blurhash-python
     # via python-dateutil
+    # via pywebpush
 sniffio==1.3.1
     # via anyio
     # via httpx
@@ -191,3 +214,5 @@ uvicorn==0.29.0
 virtualenv==20.26.0
     # via pre-commit
 whitenoise==6.6.0
+yarl==1.9.4
+    # via aiohttp

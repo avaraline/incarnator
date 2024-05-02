@@ -32,6 +32,7 @@ dependencies = [
     "urlman>=2.0.1",
     "uvicorn>=0.29.0",
     "whitenoise>=6.6.0",
+    "pywebpush>=2.0.0",
 ]
 readme = "README.md"
 requires-python = ">= 3.11"

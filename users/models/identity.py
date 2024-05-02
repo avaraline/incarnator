@@ -13,6 +13,7 @@ from django.utils import timezone
 from django.utils.functional import lazy
 from lxml import etree
 
+from api.models import NotificationType, Policy
 from core.exceptions import ActorMismatchError
 from core.html import ContentRenderer, FediverseHtmlParser
 from core.json import json_from_response
@@ -411,8 +412,8 @@ class Identity(StatorModel):
 
     def calculate_stats(self, save=True):
         try:
-            latest = format_ld_date(self.posts.latest("created").created)
-        except ObjectDoesNotExist:
+            latest = self.posts.latest("created").created.date().isoformat()
+        except (ObjectDoesNotExist, AttributeError):
             latest = None
         self.stats = {
             "last_status_at": latest,
@@ -420,7 +421,6 @@ class Identity(StatorModel):
             "followers_count": self.inbound_follows.count(),
             "following_count": self.outbound_follows.count(),
         }
-        logger.info("calculate_stats(%s): %s", self.handle, self.stats)
         if save:
             self.save()
 
@@ -431,6 +431,33 @@ class Identity(StatorModel):
     def remove_alias(self, actor_uri: str):
         self.aliases = [x for x in (self.aliases or []) if x != actor_uri]
         self.save()
+
+    ### Push Notifications ###
+
+    def notify(
+        self,
+        type: NotificationType,
+        source: "Identity",
+        title: str | None = None,
+        body: str | None = None,
+    ) -> bool:
+        if not self.local:
+            return False
+        for token in self.tokens.filter(push_subscription__isnull=False).select_related(
+            "push_subscription"
+        ):
+            sub = token.push_subscription
+            title, body = type.params(handle=source.handle)
+            match sub.policy:
+                case Policy.all:
+                    pass
+                case Policy.followed:
+                    pass
+                case Policy.follower:
+                    pass
+                case Policy.none:
+                    pass
+            token.push_notifications.create(type=type, title=title, body=body)
 
     ### Alternate constructors/fetchers ###
 

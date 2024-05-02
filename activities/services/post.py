@@ -9,6 +9,7 @@ from activities.models import (
     PostStates,
     TimelineEvent,
 )
+from api.models import NotificationType
 from users.models import Identity
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,7 @@ class PostService:
 
     def boost_as(self, identity: Identity):
         self.interact_as(identity, PostInteraction.Types.boost)
+        self.post.author.notify(NotificationType.BOOST, identity)
 
     def unboost_as(self, identity: Identity):
         self.uninteract_as(identity, PostInteraction.Types.boost)

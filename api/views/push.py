@@ -1,9 +1,11 @@
 from django.conf import settings
 from django.http import Http404
-from hatchway import ApiError, QueryOrBody, api_view
+from django.shortcuts import get_object_or_404
 
 from api import schemas
 from api.decorators import scope_required
+from api.models import PushSubscription
+from hatchway import ApiError, QueryOrBody, api_view
 
 
 @scope_required("push")
@@ -17,13 +19,11 @@ def create_subscription(
     if not settings.SETUP.VAPID_PRIVATE_KEY:
         raise Http404("Push not available")
     # Then, register this with our token
-    request.token.set_push_subscription(
-        {
-            "endpoint": subscription.endpoint,
-            "keys": subscription.keys,
-            "alerts": data.alerts,
-            "policy": data.policy,
-        }
+    request.token.subscribe(
+        subscription.endpoint,
+        subscription.keys.model_dump(),
+        data.alerts.model_dump(),
+        data.policy,
     )
     # Then return the subscription
     return schemas.PushSubscription.from_token(request.token)  # type:ignore
@@ -50,14 +50,9 @@ def update_subscription(
     # First, check the server is set up to do push notifications
     if not settings.SETUP.VAPID_PRIVATE_KEY:
         raise Http404("Push not available")
-    # Get the subscription if it exists
-    subscription = schemas.PushSubscription.from_token(request.token)
-    if not subscription:
-        raise ApiError(404, "Not Found")
-    # Update the subscription
-    subscription.alerts = data.alerts
-    subscription.policy = data.policy
-    request.token.set_push_subscription(subscription)
+    # Get the subscription if it exists and update it
+    sub = get_object_or_404(PushSubscription, token=request.token)
+    sub.update(data.alerts.model_dump(), data.policy)
     # Then return the subscription
     return schemas.PushSubscription.from_token(request.token)  # type:ignore
 
@@ -66,5 +61,5 @@ def update_subscription(
 @api_view.delete
 def delete_subscription(request) -> dict:
     # Unset the subscription
-    request.token.push_subscription = None
+    PushSubscription.objects.filter(token=request.token).delete()
     return {}

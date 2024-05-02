@@ -9,7 +9,6 @@ from django.db.models import (
 )
 
 from activities.models import Post
-from core.ld import format_ld_date
 from users.models import Follow, Identity
 
 
@@ -50,7 +49,7 @@ class Command(BaseCommand):
         )
 
         for i in qs:
-            latest = format_ld_date(i.last_status_at) if i.last_status_at else None
+            latest = i.last_status_at.date().isoformat() if i.last_status_at else None
             i.stats = {
                 "statuses_count": i.statuses_count or 0,
                 "last_status_at": latest,

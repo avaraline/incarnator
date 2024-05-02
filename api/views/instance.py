@@ -87,8 +87,6 @@ def instance_info_v2(request) -> dict:
         "version": f"takahe/{__version__}",
         "source_url": "https://github.com/jointakahe/takahe",
         "description": "",
-        "email": "",
-        "urls": {},
         "usage": {
             "users": {
                 "active_month": Identity.objects.filter(local=True).count(),
@@ -100,7 +98,10 @@ def instance_info_v2(request) -> dict:
         "languages": ["en"],
         "configuration": {
             "urls": {},
-            "accounts": {"max_featured_tags": 0},
+            "vapid": {
+                "public_key": settings.SETUP.VAPID_PUBLIC_KEY,
+            },
+            "accounts": {"max_featured_tags": 10, "max_pinned_statuses": 5},
             "statuses": {
                 "max_characters": Config.system.post_length,
                 "max_media_attachments": Config.system.max_media_attachments,
@@ -133,6 +134,7 @@ def instance_info_v2(request) -> dict:
             "enabled": Config.system.signup_allowed,
             "approval_required": False,
             "message": None,
+            "url": None,
         },
         "contact": {
             "email": "",
