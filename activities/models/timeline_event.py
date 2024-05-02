@@ -22,6 +22,16 @@ class TimelineEvent(models.Model):
         announcement = "announcement"  # Server announcement
         identity_created = "identity_created"  # New identity created
 
+    NOTIFICATION_NAMES = {
+        Types.post: "status",
+        Types.liked: "favourite",
+        Types.boosted: "reblog",
+        Types.mentioned: "mention",
+        Types.followed: "follow",
+        Types.follow_requested: "follow_request",
+        Types.identity_created: "admin.sign_up",
+    }
+
     # The user this event is for
     identity = models.ForeignKey(
         "users.Identity",
@@ -115,6 +125,7 @@ class TimelineEvent(models.Model):
             identity=identity,
             type=cls.Types.post,
             subject_post=post,
+            subject_identity=post.author,
             defaults={"published": post.published or post.created},
         )
         if created:
@@ -168,7 +179,11 @@ class TimelineEvent(models.Model):
                 subject_post_interaction=interaction,
             )
             if created:
-                identity.notify(PushType.favorite, interaction.identity)
+                identity.notify(
+                    PushType.favorite,
+                    interaction.identity,
+                    body=interaction.post.content_preview(),
+                )
             return event
         elif interaction.type == interaction.Types.boost:
             # If the boost is on one of our posts, then that's a boosted too
@@ -184,8 +199,13 @@ class TimelineEvent(models.Model):
                 subject_identity_id=interaction.identity_id,
                 subject_post_interaction=interaction,
             )
-            if created:
-                identity.notify(PushType.boost, interaction.identity)
+            # Only send notifications for boosts of our posts.
+            if created and boost_type == cls.Types.boosted:
+                identity.notify(
+                    PushType.boost,
+                    interaction.identity,
+                    body=interaction.post.content_preview(),
+                )
             return event
 
     @classmethod
@@ -240,34 +260,18 @@ class TimelineEvent(models.Model):
     ### Mastodon Client API ###
 
     def to_mastodon_notification_json(self, interactions=None):
+        if self.type not in TimelineEvent.NOTIFICATION_NAMES:
+            raise ValueError(f"Cannot convert {self.type} to notification JSON")
         result = {
             "id": str(self.pk),
             "created_at": format_ld_date(self.created),
             "account": self.subject_identity.to_mastodon_json(),
+            "type": TimelineEvent.NOTIFICATION_NAMES[self.type],
         }
-        if self.type == self.Types.liked:
-            result["type"] = "favourite"
+        if self.subject_post:
             result["status"] = self.subject_post.to_mastodon_json(
                 interactions=interactions
             )
-        elif self.type == self.Types.boosted:
-            result["type"] = "reblog"
-            result["status"] = self.subject_post.to_mastodon_json(
-                interactions=interactions
-            )
-        elif self.type == self.Types.mentioned:
-            result["type"] = "mention"
-            result["status"] = self.subject_post.to_mastodon_json(
-                interactions=interactions
-            )
-        elif self.type == self.Types.followed:
-            result["type"] = "follow"
-        elif self.type == self.Types.follow_requested:
-            result["type"] = "follow_request"
-        elif self.type == self.Types.identity_created:
-            result["type"] = "admin.sign_up"
-        else:
-            raise ValueError(f"Cannot convert {self.type} to notification JSON")
         return result
 
     def to_mastodon_status_json(self, interactions=None, bookmarks=None, identity=None):

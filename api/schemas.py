@@ -360,6 +360,7 @@ class Relationship(Schema):
     followed_by: bool
     showing_reblogs: bool
     notifying: bool
+    languages: list[str]
     blocking: bool
     blocked_by: bool
     muting: bool
@@ -443,6 +444,7 @@ class Preferences(Schema):
         "hide_all",
     ] = Field(alias="reading:expand:media")
     reading_expand_spoilers: bool = Field(alias="reading:expand:spoilers")
+    reading_autoplay_gifs: bool = Field(alias="reading:autoplay:gifs")
 
     @classmethod
     def from_identity(
@@ -471,6 +473,7 @@ class Preferences(Schema):
                 "posting:default:language": preferred_posting_language,
                 "reading:expand:media": "default",
                 "reading:expand:spoilers": identity.config_identity.expand_content_warnings,
+                "reading:autoplay:gifs": True,
             }
         )
 

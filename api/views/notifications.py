@@ -1,19 +1,21 @@
 from django.http import Http404, HttpRequest
 from django.shortcuts import get_object_or_404
-from hatchway import ApiResponse, api_view
 
 from activities.models import PostInteraction, TimelineEvent
 from activities.services import TimelineService
 from api import schemas
 from api.decorators import scope_required
 from api.pagination import MastodonPaginator, PaginatingApiResponse, PaginationResult
+from hatchway import ApiResponse, api_view
 
 # Types/exclude_types use weird syntax so we have to handle them manually
 NOTIFICATION_TYPES = {
+    "status": TimelineEvent.Types.post,
     "favourite": TimelineEvent.Types.liked,
     "reblog": TimelineEvent.Types.boosted,
     "mention": TimelineEvent.Types.mentioned,
     "follow": TimelineEvent.Types.followed,
+    "follow_request": TimelineEvent.Types.follow_requested,
     "admin.sign_up": TimelineEvent.Types.identity_created,
 }
 

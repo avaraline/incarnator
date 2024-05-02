@@ -193,6 +193,9 @@ class Follow(StatorModel):
     boosts = models.BooleanField(
         default=True, help_text="Also follow boosts from this user"
     )
+    notify = models.BooleanField(
+        default=False, help_text="Notify about posts from this user"
+    )
 
     uri = models.CharField(blank=True, null=True, max_length=500)
     note = models.TextField(blank=True, null=True)
@@ -227,7 +230,7 @@ class Follow(StatorModel):
             return None
 
     @classmethod
-    def create_local(cls, source, target, boosts=True):
+    def create_local(cls, source, target, boosts=True, notify=False):
         """
         Creates a Follow from a local Identity to the target
         (which can be local or remote).
@@ -240,6 +243,7 @@ class Follow(StatorModel):
             if not follow.active:
                 follow.state = FollowStates.unrequested
             follow.boosts = boosts
+            follow.notify = notify
             follow.save()
         except Follow.DoesNotExist:
             with transaction.atomic():
@@ -247,6 +251,7 @@ class Follow(StatorModel):
                     source=source,
                     target=target,
                     boosts=boosts,
+                    notify=notify,
                     uri="",
                     state=FollowStates.unrequested,
                 )

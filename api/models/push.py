@@ -35,15 +35,15 @@ class PushType(models.TextChoices):
 
     def get_title(self, **kwargs):
         return {
-            "mention": "{handle} mentioned your post",
-            "status": "New post from {handle}",
-            "reblog": "{handle} boosted your post",
-            "follow": "{handle} is now following you",
-            "follow_request": "Follow request from {handle}",
-            "favourite": "{handle} favorited your post",
-            "poll": "{handle} posted a new poll",
+            "mention": "{name} mentioned your post",
+            "status": "New post from {name}",
+            "reblog": "{name} boosted your post",
+            "follow": "{name} is now following you",
+            "follow_request": "Follow request from {name}",
+            "favourite": "{name} favorited your post",
+            "poll": "{name} posted a new poll",
             "update": "Update",
-            "admin.sign_up": "Account Signup",
+            "admin.sign_up": "{name} signed up for an account",
             "admin.report": "Report",
         }[self.value].format(**kwargs)
 
@@ -102,7 +102,7 @@ class PushSubscription(models.Model):
             case PushPolicy.none:
                 return None
         if title is None:
-            title = type.get_title(handle=source.handle)
+            title = type.get_title(name=source.name_or_handle if source else "Someone")
         if body is None:
             body = ""
         icon = source.local_icon_url().absolute if source else Config.system.site_icon

@@ -116,14 +116,16 @@ class IdentityService:
         if existing_follow:
             existing_follow.transition_perform(FollowStates.rejecting)
 
-    def follow(self, target_identity: Identity, boosts=True) -> Follow:
+    def follow(self, target_identity: Identity, boosts=True, notify=False) -> Follow:
         """
         Follows a user (or does nothing if already followed).
         Returns the follow.
         """
         if target_identity == self.identity:
             raise ValueError("You cannot follow yourself")
-        return Follow.create_local(self.identity, target_identity, boosts=boosts)
+        return Follow.create_local(
+            self.identity, target_identity, boosts=boosts, notify=notify
+        )
 
     def unfollow(self, target_identity: Identity):
         """
@@ -268,22 +270,32 @@ class IdentityService:
         relationships = self.relationships(from_identity)
         return {
             "id": str(self.identity.pk),
-            "following": relationships["outbound_follow"] is not None
-            and relationships["outbound_follow"].accepted,
-            "followed_by": relationships["inbound_follow"] is not None
-            and relationships["inbound_follow"].accepted,
-            "showing_reblogs": (
-                relationships["outbound_follow"]
-                and relationships["outbound_follow"].boosts
-                or False
+            "following": (
+                relationships["outbound_follow"] is not None
+                and relationships["outbound_follow"].accepted
             ),
-            "notifying": False,
+            "followed_by": (
+                relationships["inbound_follow"] is not None
+                and relationships["inbound_follow"].accepted
+            ),
+            "showing_reblogs": (
+                relationships["outbound_follow"] is not None
+                and relationships["outbound_follow"].boosts
+            ),
+            "notifying": (
+                relationships["outbound_follow"] is not None
+                and relationships["outbound_follow"].notify
+            ),
+            "languages": [],
             "blocking": relationships["outbound_block"] is not None,
             "blocked_by": relationships["inbound_block"] is not None,
             "muting": relationships["outbound_mute"] is not None,
             "muting_notifications": False,
-            "requested": relationships["outbound_follow"] is not None
-            and relationships["outbound_follow"].state == FollowStates.pending_approval,
+            "requested": (
+                relationships["outbound_follow"] is not None
+                and relationships["outbound_follow"].state
+                == FollowStates.pending_approval
+            ),
             "domain_blocking": False,
             "endorsed": False,
             "note": (

@@ -78,9 +78,24 @@ class TimelineService:
         )
 
     def notifications(self, types: list[str]) -> models.QuerySet[TimelineEvent]:
+        filter_types = set(types)
+        if "post" in types:
+            # If post notifications are requested, only show from accounts we're following with
+            # `notify=True` set.
+            filter_types.discard("post")
+            notify_ids = (
+                self.identity.outbound_follows.active()
+                .filter(notify=True)
+                .values_list("id", flat=True)
+            )
+            q = models.Q(type__in=filter_types) | (
+                models.Q(type="post") & models.Q(subject_identity_id__in=notify_ids)
+            )
+        else:
+            q = models.Q(type__in=filter_types)
         return (
             self.event_queryset()
-            .filter(identity=self.identity, type__in=types, dismissed=False)
+            .filter(q, identity=self.identity, dismissed=False)
             .order_by("-created")
         )
 

@@ -238,12 +238,17 @@ def account_statuses(
 
 @scope_required("write:follows")
 @api_view.post
-def account_follow(request, id: str, reblogs: bool = True) -> schemas.Relationship:
+def account_follow(
+    request,
+    id: str,
+    reblogs: QueryOrBody[bool] = True,
+    notify: QueryOrBody[bool] = False,
+) -> schemas.Relationship:
     identity = get_object_or_404(
         Identity.objects.exclude(restriction=Identity.Restriction.blocked), pk=id
     )
     service = IdentityService(request.identity)
-    service.follow(identity, boosts=reblogs)
+    service.follow(identity, boosts=reblogs, notify=notify)
     return schemas.Relationship.from_identity_pair(identity, request.identity)
 
 
