@@ -1,4 +1,5 @@
 import datetime
+import html
 import json
 import logging
 import mimetypes
@@ -18,6 +19,7 @@ from django.db.utils import IntegrityError
 from django.template import loader
 from django.template.defaultfilters import linebreaks_filter
 from django.utils import timezone
+from django.utils.html import strip_tags
 from pyld.jsonld import JsonLdError
 
 from activities.models.emoji import Emoji
@@ -467,6 +469,12 @@ class Post(StatorModel):
         if not self.summary:
             return ""
         return "summary-{self.id}"
+
+    def content_preview(self, length=80):
+        preview = html.unescape(strip_tags(self.content))[: length + 1]
+        if len(preview) > length:
+            preview = preview[:length] + "…"
+        return preview
 
     @property
     def stats_with_defaults(self):

@@ -21,6 +21,13 @@ class TokenAdmin(admin.ModelAdmin):
     inlines = [PushSubscriptionInline]
 
 
+@admin.register(PushSubscription)
+class PushSubscriptionAdmin(admin.ModelAdmin):
+    list_display = ["id", "token", "endpoint", "policy"]
+    search_fields = ["endpoint"]
+    raw_id_fields = ["token"]
+
+
 @admin.register(PushNotification)
 class PushNotificationAdmin(admin.ModelAdmin):
     list_display = ["id", "token", "type", "title", "body", "state"]

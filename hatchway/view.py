@@ -43,11 +43,13 @@ class ApiView:
         output_type: Any = None,
         implicit_lists: bool = True,
         method: str | None = None,
+        dump_params: dict | None = None,
     ):
         self.view = view
         self.implicit_lists = implicit_lists
         self.view_name = getattr(view, "__name__", "unknown_view")
         self.method = method
+        self.dump_params = dump_params or {}
         # Extract input/output types from view annotations if we need to
         self.input_types = input_types
         if self.input_types is None:
@@ -65,24 +67,33 @@ class ApiView:
         self.compile()
 
     @classmethod
-    def get(cls, view: Callable):
-        return cls(view=view, method="get")
+    def decorator(cls, view: Callable | None = None, method: str = "", **dump_params):
+        def make(actual_view: Callable):
+            return cls(view=actual_view, method=method, dump_params=dump_params)
+
+        if view:
+            return make(view)
+        return make
 
     @classmethod
-    def post(cls, view: Callable):
-        return cls(view=view, method="post")
+    def get(cls, view: Callable | None = None, **dump_params):
+        return cls.decorator(view=view, method="get", **dump_params)
 
     @classmethod
-    def put(cls, view: Callable):
-        return cls(view=view, method="put")
+    def post(cls, view: Callable | None = None, **dump_params):
+        return cls.decorator(view=view, method="post", **dump_params)
 
     @classmethod
-    def patch(cls, view: Callable):
-        return cls(view=view, method="patch")
+    def put(cls, view: Callable | None = None, **dump_params):
+        return cls.decorator(view=view, method="put", **dump_params)
 
     @classmethod
-    def delete(cls, view: Callable):
-        return cls(view=view, method="delete")
+    def patch(cls, view: Callable | None = None, **dump_params):
+        return cls.decorator(view=view, method="patch", **dump_params)
+
+    @classmethod
+    def delete(cls, view: Callable | None = None, **dump_params):
+        return cls.decorator(view=view, method="delete", **dump_params)
 
     @classmethod
     def sources_for_input(cls, input_type) -> tuple[list[InputSource], Any]:
@@ -311,9 +322,11 @@ class ApiView:
             response = ApiResponse(response)
         # Get pydantic to coerce the output response
         if self.output_type is not None:
-            response.data = self.output_model(value=response.data).model_dump()["value"]
+            response.data = self.output_model(value=response.data).model_dump(
+                **self.dump_params
+            )["value"]
         elif isinstance(response.data, BaseModel):
-            response.data = response.data.model_dump()
+            response.data = response.data.model_dump(**self.dump_params)
         return response
 
 

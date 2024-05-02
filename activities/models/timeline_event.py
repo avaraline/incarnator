@@ -1,6 +1,7 @@
 from django.db import models
 from django.utils import timezone
 
+from api.models.push import PushType
 from core.ld import format_ld_date
 
 
@@ -82,58 +83,73 @@ class TimelineEvent(models.Model):
             identity=identity,
             subject_identity=source_identity,
         ).delete()
-        return cls.objects.get_or_create(
+        event, created = cls.objects.get_or_create(
             identity=identity,
             type=cls.Types.followed,
             subject_identity=source_identity,
-        )[0]
+        )
+        if created:
+            identity.notify(PushType.follow, source_identity)
+        return event
 
     @classmethod
     def add_follow_request(cls, identity, source_identity):
         """
         Adds a follow request to the timeline if it's not there already
         """
-        return cls.objects.get_or_create(
+        event, created = cls.objects.get_or_create(
             identity=identity,
             type=cls.Types.follow_requested,
             subject_identity=source_identity,
-        )[0]
+        )
+        if created:
+            identity.notify(PushType.follow_request, source_identity)
+        return event
 
     @classmethod
     def add_post(cls, identity, post):
         """
         Adds a post to the timeline if it's not there already
         """
-        return cls.objects.get_or_create(
+        event, created = cls.objects.get_or_create(
             identity=identity,
             type=cls.Types.post,
             subject_post=post,
             defaults={"published": post.published or post.created},
-        )[0]
+        )
+        if created:
+            identity.notify(PushType.status, post.author, body=post.content_preview())
+        return event
 
     @classmethod
     def add_mentioned(cls, identity, post):
         """
         Adds a mention of identity by post
         """
-        return cls.objects.get_or_create(
+        event, created = cls.objects.get_or_create(
             identity=identity,
             type=cls.Types.mentioned,
             subject_post=post,
             subject_identity=post.author,
             defaults={"published": post.published or post.created},
-        )[0]
+        )
+        if created:
+            identity.notify(PushType.mention, post.author, body=post.content_preview())
+        return event
 
     @classmethod
     def add_identity_created(cls, identity, new_identity):
         """
         Adds a new identity item
         """
-        return cls.objects.get_or_create(
+        event, created = cls.objects.get_or_create(
             identity=identity,
             type=cls.Types.identity_created,
             subject_identity=new_identity,
-        )[0]
+        )
+        if created:
+            identity.notify(PushType.admin_signup, new_identity)
+        return event
 
     @classmethod
     def add_post_interaction(cls, identity, interaction):
@@ -144,30 +160,33 @@ class TimelineEvent(models.Model):
         It'll return the "boost" in that case.
         """
         if interaction.type == interaction.Types.like:
-            return cls.objects.get_or_create(
+            event, created = cls.objects.get_or_create(
                 identity=identity,
                 type=cls.Types.liked,
                 subject_post_id=interaction.post_id,
                 subject_identity_id=interaction.identity_id,
                 subject_post_interaction=interaction,
-            )[0]
+            )
+            if created:
+                identity.notify(PushType.favorite, interaction.identity)
+            return event
         elif interaction.type == interaction.Types.boost:
             # If the boost is on one of our posts, then that's a boosted too
-            if interaction.post.author_id == identity.id:
-                return cls.objects.get_or_create(
-                    identity=identity,
-                    type=cls.Types.boosted,
-                    subject_post_id=interaction.post_id,
-                    subject_identity_id=interaction.identity_id,
-                    subject_post_interaction=interaction,
-                )[0]
-            return cls.objects.get_or_create(
+            boost_type = (
+                cls.Types.boosted
+                if interaction.post.author_id == identity.id
+                else cls.Types.boost
+            )
+            event, created = cls.objects.get_or_create(
                 identity=identity,
-                type=cls.Types.boost,
+                type=boost_type,
                 subject_post_id=interaction.post_id,
                 subject_identity_id=interaction.identity_id,
                 subject_post_interaction=interaction,
-            )[0]
+            )
+            if created:
+                identity.notify(PushType.boost, interaction.identity)
+            return event
 
     @classmethod
     def delete_post_interaction(cls, identity, interaction):

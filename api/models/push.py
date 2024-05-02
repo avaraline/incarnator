@@ -1,4 +1,5 @@
 import json
+from typing import TYPE_CHECKING, Optional
 
 import requests
 from django.conf import settings
@@ -8,30 +9,43 @@ from pywebpush import webpush
 from core.models import Config
 from stator.models import State, StateField, StateGraph, StatorModel
 
-Policy = models.TextChoices(
-    "Policy",
+if TYPE_CHECKING:
+    from users.models import Identity
+
+PushPolicy = models.TextChoices(
+    "PushPolicy",
     ["all", "followed", "follower", "none"],
 )
 
 
-class NotificationType(models.TextChoices):
-    MENTION = "mention", "Mention"
-    STATUS = "status", "Post"
-    BOOST = "reblog", "Boost"
-    FOLLOW = "follow", "Follow"
-    FOLLOW_REQUEST = "follow_request", "Follow Request"
-    FAVORITE = "favourite", "Favorite"
-    POLL = "poll", "Poll"
-    UPDATE = "update", "Update"
-    ADMIN_SIGNUP = "admin.sign_up", "Account Signup"
-    ADMIN_REPORT = "admin.report", "Report"
+class PushType(models.TextChoices):
+    mention = "mention", "Mention"
+    status = "status", "Post"
+    boost = "reblog", "Boost"
+    follow = "follow", "Follow"
+    follow_request = "follow_request", "Follow Request"
+    favorite = "favourite", "Favorite"
+    poll = "poll", "Poll"
+    update = "update", "Update"
+    admin_signup = "admin.sign_up", "Account Signup"
+    admin_report = "admin.report", "Report"
 
-    def params(self, **kwargs):
-        title, body = "", ""
-        match self:
-            case NotificationType.BOOST:
-                title, body = ("Boost", "{handle} boosted your post.")
-        return title.format(**kwargs), body.format(**kwargs)
+    def should_send(self, alerts: dict) -> bool:
+        return alerts.get(self.value, False)
+
+    def get_title(self, **kwargs):
+        return {
+            "mention": "{handle} mentioned your post",
+            "status": "New post from {handle}",
+            "reblog": "{handle} boosted your post",
+            "follow": "{handle} is now following you",
+            "follow_request": "Follow request from {handle}",
+            "favourite": "{handle} favorited your post",
+            "poll": "{handle} posted a new poll",
+            "update": "Update",
+            "admin.sign_up": "Account Signup",
+            "admin.report": "Report",
+        }[self.value].format(**kwargs)
 
 
 class PushSubscription(models.Model):
@@ -45,13 +59,13 @@ class PushSubscription(models.Model):
     alerts = models.JSONField(blank=True, null=True)
     policy = models.CharField(
         max_length=8,
-        choices=Policy.choices,
+        choices=PushPolicy.choices,
         default="all",
     )
 
     def to_mastodon_json(self):
         return {
-            "id": str(self.pk),
+            "id": self.pk,
             "endpoint": self.endpoint,
             "alerts": self.alerts or {},
             "policy": self.policy,
@@ -59,9 +73,46 @@ class PushSubscription(models.Model):
         }
 
     def update(self, alerts: dict, policy: str):
+        """
+        Updates this push subscription with the specified alerts and policy.
+        """
         self.alerts = alerts
         self.policy = policy
         self.save()
+
+    def notify(
+        self,
+        type: PushType,
+        identity: "Identity",
+        source: Optional["Identity"] = None,
+        title: str | None = None,
+        body: str | None = None,
+    ) -> Optional["PushNotification"]:
+        """
+        Checks the PushType against the configured alerts, and the target and source identities to
+        see if a push notification should be sent. If so, schedules it to be sent.
+        """
+        if not type.should_send(self.alerts):
+            return None
+        match self.policy:
+            case PushPolicy.followed:
+                pass
+            case PushPolicy.follower:
+                pass
+            case PushPolicy.none:
+                return None
+        if title is None:
+            title = type.get_title(handle=source.handle)
+        if body is None:
+            body = ""
+        icon = source.local_icon_url().absolute if source else Config.system.site_icon
+        return PushNotification.objects.create(
+            token=self.token,
+            type=type,
+            icon=icon,
+            title=title,
+            body=body,
+        )
 
 
 class PushNotificationStates(StateGraph):
@@ -110,7 +161,8 @@ class PushNotification(StatorModel):
         related_name="push_notifications",
     )
     locale = models.CharField(max_length=2, default="en")
-    type = models.CharField(max_length=20, choices=NotificationType.choices)
+    type = models.CharField(max_length=20, choices=PushType.choices)
+    icon = models.CharField(max_length=500)
     title = models.CharField(max_length=100)
     body = models.CharField(max_length=500)
 
@@ -125,7 +177,7 @@ class PushNotification(StatorModel):
             "preferred_locale": self.locale,
             "notification_id": self.pk,
             "notification_type": self.type,
-            "icon": Config.system.site_icon,
+            "icon": self.icon,
             "title": self.title,
             "body": self.body,
         }

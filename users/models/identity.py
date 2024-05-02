@@ -13,7 +13,7 @@ from django.utils import timezone
 from django.utils.functional import lazy
 from lxml import etree
 
-from api.models import NotificationType, Policy
+from api.models.push import PushSubscription, PushType
 from core.exceptions import ActorMismatchError
 from core.html import ContentRenderer, FediverseHtmlParser
 from core.json import json_from_response
@@ -436,28 +436,26 @@ class Identity(StatorModel):
 
     def notify(
         self,
-        type: NotificationType,
-        source: "Identity",
+        type: PushType,
+        source: Optional["Identity"] = None,
         title: str | None = None,
         body: str | None = None,
     ) -> bool:
+        """
+        Notifies this Identity of the specified push event type. In almost all cases, source will be
+        the identity who performed the action.
+        """
         if not self.local:
             return False
-        for token in self.tokens.filter(push_subscription__isnull=False).select_related(
-            "push_subscription"
+        sent = False
+        for sub in (
+            PushSubscription.objects.filter(token__identity=self)
+            .exclude(policy="none")
+            .select_related("token")
         ):
-            sub = token.push_subscription
-            title, body = type.params(handle=source.handle)
-            match sub.policy:
-                case Policy.all:
-                    pass
-                case Policy.followed:
-                    pass
-                case Policy.follower:
-                    pass
-                case Policy.none:
-                    pass
-            token.push_notifications.create(type=type, title=title, body=body)
+            if sub.notify(type, self, source=source, title=title, body=body):
+                sent = True
+        return sent
 
     ### Alternate constructors/fetchers ###
 

@@ -9,7 +9,7 @@ from hatchway import ApiError, QueryOrBody, api_view
 
 
 @scope_required("push")
-@api_view.post
+@api_view.post(by_alias=True)
 def create_subscription(
     request,
     subscription: QueryOrBody[schemas.PushSubscriptionCreation],
@@ -22,7 +22,7 @@ def create_subscription(
     request.token.subscribe(
         subscription.endpoint,
         subscription.keys.model_dump(),
-        data.alerts.model_dump(),
+        data.alerts.model_dump(by_alias=True),
         data.policy,
     )
     # Then return the subscription
@@ -52,7 +52,7 @@ def update_subscription(
         raise Http404("Push not available")
     # Get the subscription if it exists and update it
     sub = get_object_or_404(PushSubscription, token=request.token)
-    sub.update(data.alerts.model_dump(), data.policy)
+    sub.update(data.alerts.model_dump(by_alias=True), data.policy)
     # Then return the subscription
     return schemas.PushSubscription.from_token(request.token)  # type:ignore
 

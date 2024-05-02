@@ -504,7 +504,7 @@ class PushData(Schema):
 
 
 class PushSubscription(Schema):
-    id: str
+    id: int  # This should be str, but some clients (IceCubes) expect an int
     endpoint: str
     alerts: PushDataAlerts
     policy: str
