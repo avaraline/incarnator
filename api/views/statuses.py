@@ -17,7 +17,6 @@ from activities.services import PostService
 from api import schemas
 from api.decorators import scope_required
 from api.pagination import MastodonPaginator, PaginatingApiResponse, PaginationResult
-from core.models import Config
 from hatchway import ApiError, ApiResponse, Schema, api_view
 
 
@@ -85,7 +84,7 @@ def post_for_id(request: HttpRequest, id: str) -> Post:
 @api_view.post
 def post_status(request, details: PostStatusSchema) -> schemas.Status:
     # Check text length
-    if details.status and len(details.status) > Config.system.post_length:
+    if details.status and len(details.status) > request.config.post_length:
         raise ApiError(400, "Status is too long")
     if not details.status and not details.media_ids:
         raise ApiError(400, "Status is empty")

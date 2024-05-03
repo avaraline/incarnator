@@ -26,23 +26,23 @@ def instance_info_v1(request):
         cache.set("instance_info_stats", stats, timeout=300)
     return {
         "uri": request.headers.get("host", settings.SETUP.MAIN_DOMAIN),
-        "title": Config.system.site_name,
+        "title": request.config.site_name,
         "short_description": "",
         "description": "",
         "email": "",
         "version": f"takahe/{__version__}",
         "urls": {},
         "stats": stats,
-        "thumbnail": Config.system.site_banner,
+        "thumbnail": request.config.site_banner,
         "languages": ["en"],
-        "registrations": (Config.system.signup_allowed),
+        "registrations": (request.config.signup_allowed),
         "approval_required": False,
         "invites_enabled": False,
         "configuration": {
             "accounts": {},
             "statuses": {
-                "max_characters": Config.system.post_length,
-                "max_media_attachments": Config.system.max_media_attachments,
+                "max_characters": request.config.post_length,
+                "max_media_attachments": request.config.max_media_attachments,
                 "characters_reserved_per_url": 23,
             },
             "media_attachments": {

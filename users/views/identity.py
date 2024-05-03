@@ -79,7 +79,6 @@ class ViewIdentity(ListView):
     def get_context_data(self):
         context = super().get_context_data()
         context["identity"] = self.identity
-        context["public_styling"] = True
         context["post_count"] = self.identity.posts.count()
         context["pinned_posts"] = TimelineService(self.identity).identity_pinned()
         if self.with_replies:
@@ -242,7 +241,6 @@ class IdentityFollows(ListView):
         context["identity"] = self.identity
         context["inbound"] = self.inbound
         context["section"] = "follows"
-        context["public_styling"] = True
         context["followers_count"] = self.identity.inbound_follows.filter(
             state__in=FollowStates.group_active()
         ).count()
@@ -279,7 +277,6 @@ class IdentitySearch(FormView):
         context = super().get_context_data(**kwargs)
         context["identity"] = self.identity
         context["section"] = "search"
-        context["public_styling"] = True
         context["followers_count"] = self.identity.inbound_follows.filter(
             state__in=FollowStates.group_active()
         ).count()

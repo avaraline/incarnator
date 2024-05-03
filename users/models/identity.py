@@ -10,7 +10,6 @@ from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
-from django.utils.functional import lazy
 from lxml import etree
 
 from api.models.push import PushSubscription, PushType
@@ -1264,11 +1263,3 @@ class Identity(StatorModel):
     @cached_property
     def config_identity(self) -> Config.IdentityOptions:
         return Config.load_identity(self)
-
-    def lazy_config_value(self, key: str):
-        """
-        Lazily load a config value for this Identity
-        """
-        if key not in Config.IdentityOptions.model_fields:
-            raise KeyError(f"Undefined IdentityOption for {key}")
-        return lazy(lambda: getattr(self.config_identity, key))

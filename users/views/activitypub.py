@@ -13,7 +13,6 @@ from activities.models import Post
 from activities.services import TimelineService
 from core.decorators import cache_page
 from core.ld import canonicalise
-from core.models import Config
 from core.signatures import (
     HttpSignature,
     LDSignature,
@@ -77,14 +76,13 @@ class NodeInfo2(View):
     def get(self, request):
         # Fetch some user stats
         if request.domain:
-            domain_config = Config.load_domain(request.domain)
             local_identities = Identity.objects.filter(
                 local=True, domain=request.domain
             ).count()
             local_posts = Post.objects.filter(
                 local=True, author__domain=request.domain
             ).count()
-            metadata = {"nodeName": domain_config.site_name}
+            metadata = {"nodeName": request.config.site_name}
         else:
             local_identities = Identity.objects.filter(local=True).count()
             local_posts = Post.objects.filter(local=True).count()
@@ -99,7 +97,7 @@ class NodeInfo2(View):
                     "users": {"total": local_identities},
                     "localPosts": local_posts,
                 },
-                "openRegistrations": Config.system.signup_allowed,
+                "openRegistrations": request.config.signup_allowed,
                 "metadata": metadata,
             }
         )

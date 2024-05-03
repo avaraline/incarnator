@@ -1,1 +1,1 @@
-from .config import Config  # noqa
+from .config import Config, ConfigResolver  # noqa

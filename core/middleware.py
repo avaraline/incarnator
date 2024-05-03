@@ -1,11 +1,11 @@
 import json
-from time import time
+import time
 
 from django.conf import settings
 from django.core.exceptions import MiddlewareNotUsed
 
 from core import sentry
-from core.models import Config
+from core.models import Config, ConfigResolver
 
 
 class HeadersMiddleware:
@@ -45,12 +45,19 @@ class ConfigLoadingMiddleware:
         if not getattr(Config, "__forced__", False):
             if (
                 not getattr(Config, "system", None)
-                or (time() - self.config_ts) >= self.refresh_interval
+                or (time.monotonic() - self.config_ts) >= self.refresh_interval
             ):
                 Config.system = Config.load_system()
-                self.config_ts = time()
-        response = self.get_response(request)
-        return response
+                self.config_ts = time.monotonic()
+        # Install a ConfigResolver on the request to automatically check domain configs.
+        request.config = ConfigResolver(Config.system)
+        if request.domain:
+            request.config.add(request.domain.config_domain)
+        if request.user.is_authenticated:
+            request.config.add(request.user.config_user)
+        if request.identity:
+            request.config.add(request.identity.config_identity)
+        return self.get_response(request)
 
 
 class SentryTaggingMiddleware:

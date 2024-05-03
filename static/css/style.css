@@ -1662,11 +1662,17 @@ form .post {
 
 .post .poll ul {
     list-style: none;
+    padding: 0;
+    margin: 0;
 }
 
 .post .poll li {
-    padding: 6px 0;
+    padding: 6px;
     line-height: 18px;
+    border: 1px solid var(--color-text-dull);
+    border-radius: 3px;
+    margin-bottom: 6px;
+    opacity: 0.5;
 }
 
 .poll-number {

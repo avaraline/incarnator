@@ -1,13 +1,12 @@
 from django.http import HttpRequest
 from django.shortcuts import get_object_or_404
-from hatchway import ApiError, ApiResponse, api_view
 
 from activities.models import Post, TimelineEvent
 from activities.services import TimelineService
 from api import schemas
 from api.decorators import scope_required
 from api.pagination import MastodonPaginator, PaginatingApiResponse, PaginationResult
-from core.models import Config
+from hatchway import ApiError, ApiResponse, api_view
 
 
 @scope_required("read:statuses")
@@ -61,7 +60,7 @@ def public(
     min_id: str | None = None,
     limit: int = 20,
 ) -> ApiResponse[list[schemas.Status]]:
-    if not request.identity and not Config.system.public_timeline:
+    if not request.identity and not request.config.public_timeline:
         raise ApiError(error="public timeline is disabled", status=422)
 
     if local:

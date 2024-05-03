@@ -11,12 +11,11 @@ from django.views.static import serve
 
 from activities.services.timeline import TimelineService
 from core.decorators import cache_page
-from core.models import Config
 
 
 def homepage(request):
-    if request.domain and request.domain.config_domain.single_user:
-        return redirect(f"/@{request.domain.config_domain.single_user}/")
+    if request.config.single_user:
+        return redirect(f"/@{request.config.single_user}/")
     else:
         return About.as_view()(request)
 
@@ -26,13 +25,12 @@ class About(TemplateView):
     template_name = "about.html"
 
     def get_context_data(self):
-        service = TimelineService(None)
         return {
             "current_page": "about",
             "content": mark_safe(
-                markdown_it.MarkdownIt().render(Config.system.site_about)
+                markdown_it.MarkdownIt().render(self.request.config.site_about)
             ),
-            "posts": service.local(domain=self.request.domain)[:10],
+            "posts": TimelineService(None).local(domain=self.request.domain)[:10],
         }
 
 
@@ -95,7 +93,7 @@ class FlatPage(TemplateView):
     def get(self, request, *args, **kwargs):
         if self.config_option is None:
             raise ValueError("No config option provided")
-        self.content = getattr(Config.system, self.config_option)
+        self.content = getattr(request.config, self.config_option)
         # If the content is a plain URL, then redirect to it instead
         if (
             "\n" not in self.content

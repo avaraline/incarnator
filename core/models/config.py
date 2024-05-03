@@ -16,6 +16,22 @@ from takahe import __version__
 UploadedImage = TypeAliasType("UploadedImage", str)
 
 
+class ConfigResolver:
+    def __init__(self, *configs):
+        self._configs = list(configs)
+
+    def add(self, config):
+        if config:
+            self._configs.append(config)
+
+    def __getattr__(self, name):
+        for config in reversed(self._configs):
+            value = getattr(config, name, None)
+            if value not in (None, ""):
+                return value
+        return None
+
+
 class Config(models.Model):
     """
     A configuration setting for either the server or a specific user or identity.
@@ -233,9 +249,32 @@ class Config(models.Model):
         cache_timeout_page_post: int = 60 * 2
         cache_timeout_identity_feed: int = 60 * 5
 
-        restricted_usernames: str = "admin\nadmins\nadministrator\nadministrators\nsystem\nroot\nannounce\nannouncement\nannouncements"
+        restricted_usernames: str = "\n".join(
+            [
+                "admin",
+                "admins",
+                "administrator",
+                "administrators",
+                "system",
+                "root",
+                "announce",
+                "announcement",
+                "announcements",
+            ]
+        )
 
         custom_head: str | None = None
+
+    class DomainOptions(pydantic.BaseModel):
+        site_name: str = ""
+        highlight_color: str = ""
+        site_about: str = ""
+        site_frontpage_posts: bool | None = None
+        site_icon: UploadedImage | None = None
+        site_banner: UploadedImage | None = None
+        hide_login: bool = False
+        custom_css: str = ""
+        single_user: str = ""
 
     class UserOptions(pydantic.BaseModel):
         light_theme: bool = False
@@ -249,11 +288,3 @@ class Config(models.Model):
         expand_content_warnings: bool = False
         boosts_on_profile: bool = True
         preferred_posting_language: str = ""
-
-    class DomainOptions(pydantic.BaseModel):
-        site_name: str = ""
-        site_icon: UploadedImage | None = None
-        site_banner: UploadedImage | None = None
-        hide_login: bool = False
-        custom_css: str = ""
-        single_user: str = ""

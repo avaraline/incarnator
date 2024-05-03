@@ -3,7 +3,7 @@ import secrets
 import sys
 import urllib.parse
 from pathlib import Path
-from typing import Literal, Annotated
+from typing import Annotated, Literal
 
 import dj_database_url
 import django_cache_url
@@ -18,6 +18,7 @@ from pydantic import (
 )
 from pydantic_core import Url
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
 from takahe import __version__
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -230,18 +231,18 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
-    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",  # request.session
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
-    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",  # request.user
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "django_htmx.middleware.HtmxMiddleware",
+    "users.middleware.DomainMiddleware",  # request.domain
+    "api.middleware.ApiTokenMiddleware",  # request.token, request.identity
+    "core.middleware.ConfigLoadingMiddleware",  # request.config
     "core.middleware.HeadersMiddleware",
-    "core.middleware.ConfigLoadingMiddleware",
-    "core.middleware.ParamsMiddleware",
-    "api.middleware.ApiTokenMiddleware",
-    "users.middleware.DomainMiddleware",
+    "core.middleware.ParamsMiddleware",  # request.PARAMS
 ]
 
 ROOT_URLCONF = "takahe.urls"

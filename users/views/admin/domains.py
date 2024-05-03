@@ -164,6 +164,11 @@ class DomainEdit(FormView):
             required=False,
         )
 
+        highlight_color = forms.CharField(
+            help_text="Override the highlight color for this domain",
+            required=False,
+        )
+
         site_icon = forms.ImageField(
             required=False,
             help_text="Override the site icon for this domain",
@@ -172,6 +177,21 @@ class DomainEdit(FormView):
         site_banner = forms.ImageField(
             required=False,
             help_text="Override the site banner for this domain",
+        )
+
+        site_about = forms.CharField(
+            help_text="Override the About This Site content for this domain",
+            widget=forms.Textarea,
+            required=False,
+        )
+
+        site_frontpage_posts = forms.BooleanField(
+            label="Show Public Timeline On Front Page",
+            help_text="Override whether public timelines are shown on the homepage for this domain",
+            widget=forms.Select(
+                choices=[(None, "Default"), (True, "Enabled"), (False, "Disabled")]
+            ),
+            required=False,
         )
 
         hide_login = forms.BooleanField(
@@ -228,6 +248,15 @@ class DomainEdit(FormView):
             Domain.objects.exclude(pk=self.domain.pk).update(default=False)
         Config.set_domain(self.domain, "hide_login", form.cleaned_data["hide_login"])
         Config.set_domain(self.domain, "site_name", form.cleaned_data["site_name"])
+        Config.set_domain(
+            self.domain, "highlight_color", form.cleaned_data["highlight_color"]
+        )
+        Config.set_domain(self.domain, "site_about", form.cleaned_data["site_about"])
+        Config.set_domain(
+            self.domain,
+            "site_frontpage_posts",
+            form.cleaned_data["site_frontpage_posts"],
+        )
 
         if self.request.POST.get("site_icon__clear"):
             Config.set_domain(self.domain, "site_icon", None)
@@ -255,8 +284,11 @@ class DomainEdit(FormView):
             "default": self.domain.default,
             "users": "\n".join(sorted(user.email for user in self.domain.users.all())),
             "site_name": self.domain.config_domain.site_name,
+            "highlight_color": self.domain.config_domain.highlight_color,
             "site_icon": self.domain.config_domain.site_icon,
             "site_banner": self.domain.config_domain.site_banner,
+            "site_about": self.domain.config_domain.site_about,
+            "site_frontpage_posts": self.domain.config_domain.site_frontpage_posts,
             "hide_login": self.domain.config_domain.hide_login,
             "custom_css": self.domain.config_domain.custom_css,
             "single_user": self.domain.config_domain.single_user,

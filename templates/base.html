@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
     <head>
-        <title>{% block title %}{% endblock %} - {{ config_domain.site_name }}</title>
+        <title>{% block title %}{% endblock %} - {{ config.site_name }}</title>
         <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1">
         {% load static %}
@@ -18,22 +18,14 @@
                 --color-text-link: {{ config.highlight_color }};
             }
         </style>
-        {% if identity and public_styling %}
-            {% if identity.domain.config_domain.custom_css %}
-                <style>{{ identity.domain.config_domain.custom_css|safe }}</style>
-            {% endif %}
-        {% else %}
-            {% if request.domain.config_domain.custom_css %}
-                <style>{{ request.domain.config_domain.custom_css|safe }}</style>
-            {% endif %}
-        {% endif %}
+        {% if config.custom_css %}<style>{{ config.custom_css|safe }}</style>{% endif %}
         {% block opengraph %}
             {% include "_opengraph.html" with opengraph_local=opengraph_defaults %}
         {% endblock %}
         {% block extra_head %}{% endblock %}
         {% block custom_head %}{% if config.custom_head %}{{ config.custom_head|safe }}{% endif %}{% endblock %}
     </head>
-    <body class="{% if user.config_user.light_theme %}theme-light {% endif %}{% block body_class %}{% endblock %}" hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+    <body class="{% if config.light_theme %}theme-light {% endif %}{% block body_class %}{% endblock %}" hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
         <a id="skip-to-main" class="screenreader-text" href="#main-content">Skip to Content</a>
         <a id="skip-to-nav" class="screenreader-text" href="#side-navigation">Skip to Navigation</a>
         <main>
@@ -41,13 +33,8 @@
                 <header>
                     <menu>
                         <a class="logo" href="/">
-                            {% if identity and public_styling %}
-                                <img src="{{ identity.domain.config_domain.site_icon|default:config.site_icon }}" width="32">
-                                {{ identity.domain.config_domain.site_name|default:config.site_name }}
-                            {% else %}
-                                <img src="{{ request.domain.config_domain.site_icon|default:config.site_icon }}" width="32">
-                                {{ request.domain.config_domain.site_name|default:config.site_name }}
-                            {% endif %}
+                            <img src="{{ config.site_icon }}" width="32">
+                            {{ config.site_name }}
                         </a>
                         {% if user.is_authenticated %}
                             {% if identity %}
@@ -58,7 +45,7 @@
                             {% if user.admin %}
                                 <a href="/admin" title="Administration"><i class="fa-solid fa-screwdriver-wrench"></i></a>
                             {% endif %}
-                        {% elif not request.domain.config_domain.hide_login %}
+                        {% elif not config.hide_login %}
                             <a href="{% url "login" %}" title="Login"><i class="fa-solid fa-right-to-bracket"></i></a>
                             {% if config.signup_allowed %}
                                 <a href="{% url "signup" %}" title="Create Account"><i class="fa-solid fa-user-plus"></i></a>
