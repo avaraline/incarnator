@@ -1,4 +1,5 @@
 import re
+import time
 from datetime import date, timedelta
 
 import urlman
@@ -26,12 +27,11 @@ class HashtagStates(StateGraph):
 
         posts_query = Post.objects.local_public().tagged_with(instance)
         total = posts_query.count()
+        if not total:
+            return cls.updated
 
         today = timezone.now().date()
-        total_today = posts_query.filter(
-            created__gte=today,
-            created__lte=today + timedelta(days=1),
-        ).count()
+        total_today = posts_query.filter(created__date=today).count()
         total_month = posts_query.filter(
             created__year=today.year,
             created__month=today.month,
@@ -39,19 +39,31 @@ class HashtagStates(StateGraph):
         total_year = posts_query.filter(
             created__year=today.year,
         ).count()
-        if total:
-            if not instance.stats:
-                instance.stats = {}
-            instance.stats.update(
+
+        history = []
+        for i in range(7):
+            day = today - timedelta(days=i)
+            data = posts_query.filter(created__date=day).aggregate(
+                total=models.Count("id"),
+                num_authors=models.Count("author", distinct=True),
+            )
+            history.append(
                 {
-                    "total": total,
-                    today.isoformat(): total_today,
-                    today.strftime("%Y-%m"): total_month,
-                    today.strftime("%Y"): total_year,
+                    "day": str(int(time.mktime(day.timetuple()))),
+                    "uses": str(data["total"]),
+                    "accounts": str(data["num_authors"]),
                 }
             )
-            instance.stats_updated = timezone.now()
-            instance.save()
+
+        instance.stats = {
+            "total": total,
+            today.isoformat(): total_today,
+            today.strftime("%Y-%m"): total_month,
+            today.strftime("%Y"): total_year,
+            "history": history,
+        }
+        instance.stats_updated = timezone.now()
+        instance.save()
 
         return cls.updated
 
@@ -274,7 +286,7 @@ class Hashtag(StatorModel):
         value = {
             "name": self.hashtag,
             "url": f"https://{hostname}/tags/{self.hashtag}/",
-            "history": [],
+            "history": (self.stats or {}).get("history", []),
         }
 
         if following is not None:
