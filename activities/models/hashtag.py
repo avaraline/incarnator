@@ -27,8 +27,6 @@ class HashtagStates(StateGraph):
 
         posts_query = Post.objects.local_public().tagged_with(instance)
         total = posts_query.count()
-        if not total:
-            return cls.updated
 
         today = timezone.now().date()
         total_today = posts_query.filter(created__date=today).count()
@@ -41,9 +39,10 @@ class HashtagStates(StateGraph):
         ).count()
 
         history = []
+        tagged_posts = Post.objects.not_hidden().tagged_with(instance)
         for i in range(7):
             day = today - timedelta(days=i)
-            data = posts_query.filter(created__date=day).aggregate(
+            data = tagged_posts.filter(created__date=day).aggregate(
                 total=models.Count("id"),
                 num_authors=models.Count("author", distinct=True),
             )
