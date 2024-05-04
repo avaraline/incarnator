@@ -42,7 +42,7 @@ class HashtagStates(StateGraph):
         tagged_posts = Post.objects.not_hidden().tagged_with(instance)
         for i in range(7):
             day = today - timedelta(days=i)
-            data = tagged_posts.filter(created__date=day).aggregate(
+            data = tagged_posts.filter(published__date=day).aggregate(
                 total=models.Count("id"),
                 num_authors=models.Count("author", distinct=True),
             )
