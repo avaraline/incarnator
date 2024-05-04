@@ -17,9 +17,13 @@ def trends_tags(
     limit: int = 10,
     offset: int | None = None,
 ) -> list[schemas.Tag]:
-    return [
-        schemas.Tag.from_hashtag(t) for t in Hashtag.popular(limit=limit, offset=offset)
-    ]
+    if limit > 40:
+        limit = 40
+    return schemas.Tag.map_from_hashtags(
+        Hashtag.popular(limit=limit, offset=offset),
+        domain=request.domain,
+        identity=request.identity,
+    )
 
 
 @scope_required("read")
@@ -29,6 +33,8 @@ def trends_statuses(
     limit: int = 10,
     offset: int | None = None,
 ) -> list[schemas.Status]:
+    if limit > 40:
+        limit = 40
     if offset is None:
         offset = 0
     since = timezone.now().date() - timedelta(days=7)

@@ -39,10 +39,9 @@ def search(
             schemas.Account.from_identity(i) for i in search_result["identities"]
         ]
     if type is None or type == "hashtag":
-        result["hashtags"] = [
-            schemas.Tag.from_hashtag(h, domain=request.domain)
-            for h in search_result["hashtags"]
-        ]
+        result["hashtags"] = schemas.Tag.map_from_hashtags(
+            search_result["hashtags"], domain=request.domain, identity=request.identity
+        )
     if type is None or type == "statuses":
         interactions = PostInteraction.get_post_interactions(
             search_result["posts"], request.identity
