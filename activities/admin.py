@@ -155,6 +155,7 @@ class PostAttachmentAdmin(admin.ModelAdmin):
 
 class PostAttachmentInline(admin.StackedInline):
     model = PostAttachment
+    autocomplete_fields = ["author"]
     extra = 0
 
 

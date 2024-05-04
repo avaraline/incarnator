@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 import urlman
 from django.conf import settings
-from django.db import models, transaction
+from django.db import connection, models, transaction
 from django.utils import timezone
 
 from core.models import Config
@@ -174,6 +174,29 @@ class Hashtag(StatorModel):
                 day = int(parts[2])
                 results[date(year, month, day)] = val
         return dict(sorted(results.items(), reverse=True)[:num])
+
+    @classmethod
+    def popular(cls, days=7, limit=20, offset=None) -> list["Hashtag"]:
+        sql = """
+            SELECT jsonb_array_elements_text(hashtags) AS tag, count(id) AS uses
+            FROM activities_post
+            WHERE state NOT IN ('deleted', 'deleted_fanned_out') AND
+                  created::date >= %s
+            GROUP BY tag
+            ORDER BY uses DESC
+            LIMIT %s
+            OFFSET %s
+        """
+        since = timezone.now().date() - timedelta(days=days)
+        if offset is None:
+            offset = 0
+        with connection.cursor() as cur:
+            cur.execute(sql, (since, limit, offset))
+            names = [r[0] for r in cur.fetchall()]
+        # Grab all the popular tags at once.
+        tags = {t.hashtag: t for t in cls.objects.filter(hashtag__in=names)}
+        # Make sure we return the list in the original order of usage count.
+        return [tags[name] for name in names if name in tags]
 
     @classmethod
     def ensure_hashtag(cls, name):

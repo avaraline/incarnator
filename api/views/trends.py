@@ -1,8 +1,10 @@
+from django.db.models import Count
 from django.http import HttpRequest
-from hatchway import api_view
 
+from activities.models import Hashtag, Post
 from api import schemas
 from api.decorators import scope_required
+from hatchway import api_view
 
 
 @scope_required("read")
@@ -12,8 +14,9 @@ def trends_tags(
     limit: int = 10,
     offset: int | None = None,
 ) -> list[schemas.Tag]:
-    # We don't implement this yet
-    return []
+    return [
+        schemas.Tag.from_hashtag(t) for t in Hashtag.popular(limit=limit, offset=offset)
+    ]
 
 
 @scope_required("read")
@@ -23,8 +26,15 @@ def trends_statuses(
     limit: int = 10,
     offset: int | None = None,
 ) -> list[schemas.Status]:
-    # We don't implement this yet
-    return []
+    if offset is None:
+        offset = 0
+    posts = list(
+        Post.objects.not_hidden()
+        .visible_to(request.identity)
+        .annotate(num_interactions=Count("interactions"))
+        .order_by("-num_interactions", "-created")[offset : offset + limit]
+    )
+    return schemas.Status.map_from_post(posts, request.identity)
 
 
 @scope_required("read")
