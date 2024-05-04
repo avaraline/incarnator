@@ -180,8 +180,7 @@ class Hashtag(StatorModel):
         sql = """
             SELECT jsonb_array_elements_text(hashtags) AS tag, count(id) AS uses
             FROM activities_post
-            WHERE state NOT IN ('deleted', 'deleted_fanned_out') AND
-                  created::date >= %s
+            WHERE state NOT IN ('deleted', 'deleted_fanned_out') AND published >= %s
             GROUP BY tag
             ORDER BY uses DESC
             LIMIT %s
