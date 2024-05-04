@@ -1,6 +1,8 @@
 import logging
+from datetime import timedelta
 
 from django.db.models import OuterRef
+from django.db.models.expressions import F
 
 from activities.models import (
     Post,
@@ -20,7 +22,7 @@ class PostService:
     """
 
     @classmethod
-    def queryset(cls, include_reply_to_author=False):
+    def queryset(cls, include_reply_to_author=False, exclude_threshold=None):
         """
         Returns the base queryset to use for fetching posts efficiently.
         """
@@ -36,6 +38,10 @@ class PostService:
                 "author__domain",
             )
         )
+        if exclude_threshold is not None:
+            qs = qs.filter(
+                published__gte=F("created") - timedelta(days=exclude_threshold)
+            )
         if include_reply_to_author:
             qs = qs.annotate(
                 in_reply_to_author_id=Post.objects.filter(

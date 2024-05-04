@@ -62,7 +62,7 @@ class TimelineService:
 
     def federated(self) -> models.QuerySet[Post]:
         return (
-            PostService.queryset()
+            PostService.queryset(exclude_threshold=7)
             .public()
             .filter(author__restriction=Identity.Restriction.none)
             .order_by("-id")
@@ -70,11 +70,11 @@ class TimelineService:
 
     def hashtag(self, hashtag: str | Hashtag) -> models.QuerySet[Post]:
         return (
-            PostService.queryset()
+            PostService.queryset(exclude_threshold=7)
             .public()
             .filter(author__restriction=Identity.Restriction.none)
             .tagged_with(hashtag)
-            .order_by("-published")
+            .order_by("-id")
         )
 
     def notifications(self, types: list[str]) -> models.QuerySet[TimelineEvent]:
