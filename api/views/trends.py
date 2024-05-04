@@ -1,5 +1,8 @@
+from datetime import timedelta
+
 from django.db.models import Count
 from django.http import HttpRequest
+from django.utils import timezone
 
 from activities.models import Hashtag, Post
 from api import schemas
@@ -28,13 +31,15 @@ def trends_statuses(
 ) -> list[schemas.Status]:
     if offset is None:
         offset = 0
-    posts = list(
+    since = timezone.now().date() - timedelta(days=7)
+    posts = (
         Post.objects.not_hidden()
         .visible_to(request.identity)
+        .filter(created__gte=since)
         .annotate(num_interactions=Count("interactions"))
         .order_by("-num_interactions", "-created")[offset : offset + limit]
     )
-    return schemas.Status.map_from_post(posts, request.identity)
+    return schemas.Status.map_from_post(list(posts), request.identity)
 
 
 @scope_required("read")

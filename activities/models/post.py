@@ -182,7 +182,19 @@ class PostQuerySet(models.QuerySet):
     def visible_to(self, identity: Identity | None, include_replies: bool = False):
         if identity is None:
             return self.unlisted(include_replies=include_replies)
-        query = self.filter(
+        # It's way faster to check follows and mentioned in subselects and drop the
+        # DISTINCT. Also has the advantage of no LEFT OUTER JOINs to mess up
+        # aggregation counts (like for PostInteraction counts).
+        followed_ids = identity.outbound_follows.active().values_list(
+            "target_id", flat=True
+        )
+        query = self.annotate(
+            mentioned=models.Exists(
+                Post.mentions.through.objects.filter(
+                    post_id=models.OuterRef("id"), identity=identity
+                )
+            )
+        ).filter(
             models.Q(
                 visibility__in=[
                     Post.Visibilities.public,
@@ -192,13 +204,13 @@ class PostQuerySet(models.QuerySet):
             )
             | models.Q(
                 visibility=Post.Visibilities.followers,
-                author__inbound_follows__source=identity,
+                author_id__in=followed_ids,
             )
             | models.Q(
-                mentions=identity,
+                mentioned=True,
             )
             | models.Q(author=identity)
-        ).distinct()
+        )
         if not include_replies:
             return query.filter(in_reply_to__isnull=True)
         return query
