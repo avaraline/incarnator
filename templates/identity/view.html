@@ -64,16 +64,16 @@
         {% endif %}
     </section>
 
-    <section class="invisible identity-metadata">
-        {% if identity.metadata %}
-            {% for entry in identity.safe_metadata %}
-                <div class="metadata-pair">
-                    <span class="metadata-name">{{ entry.name }}</span>
-                    <span class="metadata-value">{{ entry.value }}</span>
-                </div>
-            {% endfor %}
-        {% endif %}
-    </section>
+    {% if identity.metadata %}
+        <section class="identity-metadata">
+                {% for entry in identity.safe_metadata %}
+                    <div class="metadata-pair">
+                        <span class="metadata-name">{{ entry.name }}</span>
+                        <span class="metadata-value">{{ entry.value }}</span>
+                    </div>
+                {% endfor %}
+        </section>
+    {% endif %}
 
     {% if not identity.local %}
         <section class="system-note">

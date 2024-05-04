@@ -62,6 +62,7 @@ class AnnouncementDelete(DeleteView):
     model = Announcement
     template_name = "admin/announcement_delete.html"
     success_url = Announcement.urls.admin_root
+    extra_context = {"section": "announcements"}
 
 
 class AnnouncementPublish(HTMXActionView):

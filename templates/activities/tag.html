@@ -3,12 +3,8 @@
 {% block title %}#{{ hashtag.display_name }} Timeline{% endblock %}
 
 {% block content %}
+    <h1><i class="fa-solid fa-hashtag"></i>{{ hashtag.display_name }}</h1>
     <section class="invisible">
-        <div class="timeline-name">
-            <div class="hashtag">
-                <i class="fa-solid fa-hashtag"></i>{{ hashtag.display_name }}
-            </div>
-        </div>
         {% for post in page_obj %}
             {% include "activities/_post.html" %}
         {% empty %}
