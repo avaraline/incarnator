@@ -142,6 +142,12 @@ class Hashtag(StatorModel):
     def display_name(self):
         return self.name_override or self.hashtag
 
+    @property
+    def needs_update(self):
+        if self.stats_updated is None:
+            return True
+        return timezone.now() - self.stats_updated > timedelta(hours=1)
+
     def __str__(self):
         return self.display_name
 
@@ -199,14 +205,15 @@ class Hashtag(StatorModel):
         return [tags[name] for name in names if name in tags]
 
     @classmethod
-    def ensure_hashtag(cls, name):
+    def ensure_hashtag(cls, name, update=None):
         """
         Properly strips/trims/lowercases the hashtag name, and makes sure a Hashtag
         object exists in the database, and returns it.
         """
         name = name.strip().lstrip("#").lower()[: Hashtag.MAXIMUM_LENGTH]
         hashtag, created = cls.objects.get_or_create(hashtag=name)
-        hashtag.transition_perform(HashtagStates.outdated)
+        if created or update or hashtag.needs_update:
+            hashtag.transition_perform(HashtagStates.outdated)
         return hashtag
 
     @classmethod

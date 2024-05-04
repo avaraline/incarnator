@@ -630,7 +630,7 @@ class Post(StatorModel):
         # Ensure hashtags
         if self.hashtags:
             for hashtag in self.hashtags:
-                Hashtag.ensure_hashtag(hashtag)
+                Hashtag.ensure_hashtag(hashtag, update=True)
 
     def calculate_stats(self, save=True):
         """
