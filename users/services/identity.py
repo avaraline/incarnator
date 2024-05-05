@@ -1,5 +1,8 @@
+import concurrent.futures
 import logging
 
+import httpx
+from django.conf import settings
 from django.core.exceptions import MultipleObjectsReturned
 from django.db import models, transaction
 from django.template.defaultfilters import linebreaks_filter
@@ -357,35 +360,64 @@ class IdentityService:
         self.follow(target_identity=target_identity, boosts=payload.get("boosts", True))
 
     @classmethod
-    def handle_internal_sync_pins(cls, payload):
+    def handle_internal_sync_actor(cls, payload):
         """
-        Handles an inbox message saying we need to sync featured posts
+        Handles an inbox message saying we need to sync featured posts and tags, and
+        fetch the follower/following/outbox counts.
 
         Message format:
         {
-            "type": "SyncPins",
+            "type": "SyncActor",
             "identity": "90310938129083",
         }
         """
         actor = Identity.objects.get(pk=payload["identity"])
         self = cls(actor)
-        if actor.featured_collection_uri:
-            featured = actor.fetch_pinned_post_uris(actor.featured_collection_uri)
-            self.sync_pins(featured)
-
-    @classmethod
-    def handle_internal_sync_tags(cls, payload):
-        """
-        Handles an inbox message saying we need to sync featured tags
-
-        Message format:
-        {
-            "type": "SyncTags",
-            "identity": "90310938129083",
-        }
-        """
-        actor = Identity.objects.get(pk=payload["identity"])
-        self = cls(actor)
-        if actor.featured_tags_uri:
-            tags = actor.fetch_featured_tags(actor.featured_tags_uri)
-            self.sync_tags(tags)
+        stats = {"last_status_at": None}
+        pipeline = [
+            (
+                actor.fetch_pinned_post_uris,
+                actor.featured_collection_uri,
+                self.sync_pins,
+            ),
+            (
+                actor.fetch_featured_tags,
+                actor.featured_tags_uri,
+                self.sync_tags,
+            ),
+            (
+                actor.fetch_collection,
+                actor.followers_uri,
+                lambda x: stats.setdefault("followers_count", x[0]),
+            ),
+            (
+                actor.fetch_collection,
+                actor.following_uri,
+                lambda x: stats.setdefault("following_count", x[0]),
+            ),
+            (
+                actor.fetch_collection,
+                actor.outbox_uri,
+                lambda x: stats.setdefault("statuses_count", x[0]),
+            ),
+        ]
+        future_actions = {}
+        with httpx.Client(
+            timeout=settings.SETUP.REMOTE_TIMEOUT,
+            headers={"User-Agent": settings.TAKAHE_USER_AGENT},
+        ) as client:
+            # TODO: move this to a global pool, or use stator executor
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=len(pipeline)
+            ) as pool:
+                # Do all the fetching in threads using a single client
+                for fn, url, action in pipeline:
+                    future_actions[pool.submit(fn, client, url)] = action
+                # Re-submit the updates to happen in threads as well
+                for f in concurrent.futures.as_completed(future_actions):
+                    pool.submit(future_actions[f], f.result())
+                # Wait for everything to finish
+                pool.shutdown()
+        logger.info("SYNC %s", stats)
+        actor.stats = stats
+        actor.save(update_fields=["stats"])

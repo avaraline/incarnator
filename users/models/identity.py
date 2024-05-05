@@ -410,6 +410,8 @@ class Identity(StatorModel):
             self.shared_inbox_uri = f"https://{self.domain.uri_domain}/inbox/"
 
     def calculate_stats(self, save=True):
+        if not self.local:
+            return
         try:
             latest = self.posts.latest("created").created.date().isoformat()
         except (ObjectDoesNotExist, AttributeError):
@@ -883,41 +885,35 @@ class Identity(StatorModel):
         return None, None
 
     @classmethod
-    def fetch_collection(cls, uri: str, total_only=False) -> tuple[int, list[dict]]:
-        with httpx.Client(
-            timeout=settings.SETUP.REMOTE_TIMEOUT,
-            headers={"User-Agent": settings.TAKAHE_USER_AGENT},
-        ) as client:
-            try:
-                response = client.get(
-                    uri,
-                    follow_redirects=True,
-                    headers={"Accept": "application/activity+json"},
+    def fetch_collection(cls, client: httpx.Client, uri: str) -> tuple[int, list[dict]]:
+        try:
+            response = client.get(
+                uri,
+                follow_redirects=True,
+                headers={"Accept": "application/activity+json"},
+            )
+            response.raise_for_status()
+        except (httpx.HTTPError, ssl.SSLCertVerificationError) as ex:
+            response = getattr(ex, "response", None)
+            if isinstance(ex, httpx.TimeoutException) or (
+                response and response.status_code in [408, 429, 504]
+            ):
+                raise TryAgainLater() from ex
+            elif (
+                response
+                and response.status_code < 500
+                and response.status_code not in [401, 403, 404, 406, 410]
+            ):
+                raise ValueError(
+                    f"Client error fetching featured collection: {response.status_code}",
+                    response.content,
                 )
-                response.raise_for_status()
-            except (httpx.HTTPError, ssl.SSLCertVerificationError) as ex:
-                response = getattr(ex, "response", None)
-                if isinstance(ex, httpx.TimeoutException) or (
-                    response and response.status_code in [408, 429, 504]
-                ):
-                    raise TryAgainLater() from ex
-                elif (
-                    response
-                    and response.status_code < 500
-                    and response.status_code not in [401, 403, 404, 406, 410]
-                ):
-                    raise ValueError(
-                        f"Client error fetching featured collection: {response.status_code}",
-                        response.content,
-                    )
-                return 0, []
+            return 0, []
 
         try:
             json_data = json_from_response(response)
             data = canonicalise(json_data, include_security=True)
             total = data.get("totalItems", 0)
-            if total_only:
-                return total, []
             # canonicalise seems to turn single-item `items` list into a dict?? gross
             if value := data.get("orderedItems"):
                 items = list(reversed(value)) if isinstance(value, list) else [value]
@@ -936,11 +932,11 @@ class Identity(StatorModel):
             )
 
     @classmethod
-    def fetch_pinned_post_uris(cls, uri: str) -> list[str]:
+    def fetch_pinned_post_uris(cls, client: httpx.Client, uri: str) -> list[str]:
         """
         Fetch an identity's featured collection (pins).
         """
-        total, items = cls.fetch_collection(uri)
+        total, items = cls.fetch_collection(client, uri)
         ids = []
         for item in items:
             if not isinstance(item, dict):
@@ -950,11 +946,11 @@ class Identity(StatorModel):
         return ids
 
     @classmethod
-    def fetch_featured_tags(cls, uri: str) -> list[str]:
+    def fetch_featured_tags(cls, client: httpx.Client, uri: str) -> list[str]:
         """
         Fetch an identity's featured tags.
         """
-        total, items = cls.fetch_collection(uri)
+        total, items = cls.fetch_collection(client, uri)
         names = []
         for item in items:
             if not isinstance(item, dict):
@@ -1103,23 +1099,13 @@ class Identity(StatorModel):
                 with transaction.atomic():
                     self.save()
 
-        # Fetch pinned posts in a followup task
-        if self.featured_collection_uri:
-            InboxMessage.create_internal(
-                {
-                    "type": "SyncPins",
-                    "identity": self.pk,
-                }
-            )
-
-        # Fetch featured tags in a followup task
-        if self.featured_tags_uri:
-            InboxMessage.create_internal(
-                {
-                    "type": "SyncTags",
-                    "identity": self.pk,
-                }
-            )
+        # Fetch featured tags, posts, counts in a followup task
+        InboxMessage.create_internal(
+            {
+                "type": "SyncActor",
+                "identity": self.pk,
+            }
+        )
 
         return True
 

@@ -1,3 +1,4 @@
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
@@ -221,8 +222,9 @@ def test_fetch_actor(httpx_mock, config_system):
     assert (
         identity.featured_tags_uri == "https://example.com/test-actor/collections/tags/"
     )
-    identity.fetch_pinned_post_uris(identity.featured_collection_uri)
-    identity.fetch_featured_tags(identity.featured_tags_uri)
+    with httpx.Client() as client:
+        identity.fetch_pinned_post_uris(client, identity.featured_collection_uri)
+        identity.fetch_featured_tags(client, identity.featured_tags_uri)
     assert identity.icon_uri == "https://example.com/icon.jpg"
     assert identity.image_uri == "https://example.com/image.jpg"
     assert identity.summary == "<p>A test user</p>"

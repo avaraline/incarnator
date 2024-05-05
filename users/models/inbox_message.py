@@ -154,12 +154,8 @@ class InboxMessageStates(StateGraph):
                             IdentityService.handle_internal_add_follow(
                                 instance.message["object"]
                             )
-                        case "syncpins":
-                            IdentityService.handle_internal_sync_pins(
-                                instance.message["object"]
-                            )
-                        case "synctags":
-                            IdentityService.handle_internal_sync_tags(
+                        case "syncactor":
+                            IdentityService.handle_internal_sync_actor(
                                 instance.message["object"]
                             )
                         case unknown:
