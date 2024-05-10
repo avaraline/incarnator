@@ -412,7 +412,8 @@ class IdentityService:
             ) as pool:
                 # Do all the fetching in threads using a single client
                 for fn, url, action in pipeline:
-                    future_actions[pool.submit(fn, client, url)] = action
+                    if url:
+                        future_actions[pool.submit(fn, client, url)] = action
                 # Re-submit the updates to happen in threads as well
                 for f in concurrent.futures.as_completed(future_actions):
                     pool.submit(future_actions[f], f.result())

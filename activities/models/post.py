@@ -938,10 +938,10 @@ class Post(StatorModel):
             try:
                 # apparently sometimes posts (Pages?) in the fediverse
                 # don't have content, but this shouldn't be a total failure
-                post.content = get_value_or_map(data, "content", "contentMap")
+                post.content = get_value_or_map(data, "content", "contentMap") or ""
             except ActivityPubFormatError as err:
                 logger.warning("%s on %s", err, post.url)
-                post.content = None
+                post.content = ""
             # Document types have names, not summaries
             post.summary = data.get("summary") or data.get("name")
             if not post.content and post.summary:
