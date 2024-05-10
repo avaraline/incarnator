@@ -413,12 +413,16 @@ class IdentityService:
                 # Do all the fetching in threads using a single client
                 for fn, url, action in pipeline:
                     if url:
-                        future_actions[pool.submit(fn, client, url)] = action
+                        future_actions[pool.submit(fn, client, url)] = (action, url)
                 # Re-submit the updates to happen in threads as well
                 for f in concurrent.futures.as_completed(future_actions):
-                    pool.submit(future_actions[f], f.result())
+                    action, url = future_actions[f]
+                    try:
+                        pool.submit(action, f.result())
+                    except ValueError:
+                        logger.exception("Error fetching %s", url)
                 # Wait for everything to finish
                 pool.shutdown()
-        logger.info("SYNC %s", stats)
+        logger.info("SYNC %s: %s", actor.actor_uri, stats)
         actor.stats = stats
         actor.save(update_fields=["stats"])
