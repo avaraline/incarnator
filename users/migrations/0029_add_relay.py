@@ -8,7 +8,7 @@ import users.models.relay
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("users", "0022_follow_request"),
+        ("users", "0028_follow_notify"),
     ]
 
     operations = [

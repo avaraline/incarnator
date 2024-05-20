@@ -27,4 +27,4 @@ class RelaysRoot(ListView):
             Relay.objects.get(pk=int(request.POST.get("id"))).unsubscribe()
         elif "remove" in request.GET:
             Relay.objects.get(pk=int(request.POST.get("id"))).force_unsubscribe()
-        return redirect(".")
+        return redirect(request.path)
