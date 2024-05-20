@@ -10,6 +10,7 @@ from .invite import Invite  # noqa
 from .lists import List  # noqa
 from .marker import Marker  # noqa
 from .password_reset import PasswordReset  # noqa
+from .relay import Relay, RelayStates  # noqa
 from .report import Report  # noqa
 from .system_actor import SystemActor  # noqa
 from .user import User  # noqa

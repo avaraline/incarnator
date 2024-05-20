@@ -17,7 +17,7 @@ class InboxMessageStates(StateGraph):
     @classmethod
     def handle_received(cls, instance: "InboxMessage"):
         from activities.models import Post, PostInteraction, TimelineEvent
-        from users.models import Block, Follow, Identity, Report
+        from users.models import Block, Follow, Identity, Relay, Report
         from users.services import IdentityService
 
         try:
@@ -69,7 +69,10 @@ class InboxMessageStates(StateGraph):
                 case "accept":
                     match instance.message_object_type:
                         case "follow":
-                            Follow.handle_accept_ap(instance.message)
+                            if Relay.is_ap_message_for_relay(instance.message):
+                                Relay.handle_accept_ap(instance.message)
+                            else:
+                                Follow.handle_accept_ap(instance.message)
                         case None:
                             # It's a string object, but these will only be for Follows
                             Follow.handle_accept_ap(instance.message)
@@ -78,7 +81,10 @@ class InboxMessageStates(StateGraph):
                 case "reject":
                     match instance.message_object_type:
                         case "follow":
-                            Follow.handle_reject_ap(instance.message)
+                            if Relay.is_ap_message_for_relay(instance.message):
+                                Relay.handle_reject_ap(instance.message)
+                            else:
+                                Follow.handle_reject_ap(instance.message)
                         case None:
                             # It's a string object, but these will only be for Follows
                             Follow.handle_reject_ap(instance.message)
