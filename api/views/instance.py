@@ -14,7 +14,7 @@ from users.models import Domain, Identity
 
 
 @api_view.get
-def instance_info_v1(request):
+def instance_info_v1(request) -> dict:
     # The stats are expensive to calculate, so don't do it very often
     stats = cache.get("instance_info_stats")
     if stats is None:
@@ -24,6 +24,9 @@ def instance_info_v1(request):
             "domain_count": Domain.objects.count(),
         }
         cache.set("instance_info_stats", stats, timeout=300)
+    admin_identity = (
+        Identity.objects.filter(users__admin=True).order_by("created").first()
+    )
     return {
         "uri": request.headers.get("host", settings.SETUP.MAIN_DOMAIN),
         "title": request.config.site_name,
@@ -64,7 +67,7 @@ def instance_info_v1(request):
                 "max_expiration": 2629746,
             },
         },
-        "contact_account": None,
+        "contact_account": schemas.Account.from_identity(admin_identity),
         "rules": [],
     }
 
