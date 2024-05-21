@@ -21,7 +21,7 @@ class RelayStates(StateGraph):
     new.transitions_to(subscribing)
     new.transitions_to(unsubscribing)
     new.transitions_to(failed)
-    new.times_out_to(failed, seconds=38400)
+    new.times_out_to(failed, seconds=86400)
     subscribing.transitions_to(subscribed)
     subscribing.transitions_to(unsubscribing)
     subscribing.transitions_to(unsubscribed)
@@ -33,7 +33,7 @@ class RelayStates(StateGraph):
     rejected.transitions_to(unsubscribed)
     unsubscribing.transitions_to(failed)
     unsubscribing.transitions_to(unsubscribed)
-    unsubscribing.times_out_to(failed, seconds=38400)
+    unsubscribing.times_out_to(failed, seconds=86400)
 
     @classmethod
     def handle_new(cls, instance: "Relay"):
@@ -46,12 +46,10 @@ class RelayStates(StateGraph):
             )
         except Exception as e:
             logger.error(f"Error sending follow request: {instance.inbox_uri} {e}")
-            return cls.failed
         if response.status_code >= 200 and response.status_code < 300:
             return cls.subscribing
         else:
             logger.error(f"Follow {instance.inbox_uri} HTTP {response.status_code}")
-            return cls.failed
 
     @classmethod
     def handle_unsubscribing(cls, instance: "Relay"):
@@ -64,12 +62,10 @@ class RelayStates(StateGraph):
             )
         except Exception as e:
             logger.error(f"Error sending unfollow request: {instance.inbox_uri} {e}")
-            return cls.failed
         if response.status_code >= 200 and response.status_code < 300:
             return cls.unsubscribed
         else:
             logger.error(f"Unfollow {instance.inbox_uri} HTTP {response.status_code}")
-            return cls.failed
 
 
 class Relay(StatorModel):

@@ -16,6 +16,7 @@ from users.models import (
     List,
     Marker,
     PasswordReset,
+    Relay,
     Report,
     User,
     UserEvent,
@@ -252,3 +253,8 @@ class BookmarkAdmin(admin.ModelAdmin):
     list_display = ["id", "identity", "post", "created"]
     autocomplete_fields = ["identity"]
     raw_id_fields = ["post"]
+
+
+@admin.register(Relay)
+class RelayAdmin(admin.ModelAdmin):
+    list_display = ["inbox_uri"]
