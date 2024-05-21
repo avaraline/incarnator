@@ -40,9 +40,9 @@ class HashtagStates(StateGraph):
 
         history = []
         tagged_posts = Post.objects.not_hidden().tagged_with(instance)
-        for i in range(7):
-            # Mastodon doesn't include today in history.
-            day = today - timedelta(days=i + 1)
+        for i in range(8):
+            # Mastodon doesn't include today in history (let's do it anyway)
+            day = today - timedelta(days=i)
             data = tagged_posts.filter(published__date=day).aggregate(
                 total=models.Count("id"),
                 num_authors=models.Count("author", distinct=True),
@@ -183,7 +183,7 @@ class Hashtag(StatorModel):
         return dict(sorted(results.items(), reverse=True)[:num])
 
     @classmethod
-    def popular(cls, days=8, limit=10, offset=None) -> list["Hashtag"]:
+    def popular(cls, days=7, limit=10, offset=None) -> list["Hashtag"]:
         sql = """
             SELECT jsonb_array_elements_text(hashtags) AS tag, count(id) AS uses
             FROM activities_post
