@@ -67,7 +67,9 @@ def instance_info_v1(request) -> dict:
                 "max_expiration": 2629746,
             },
         },
-        "contact_account": schemas.Account.from_identity(admin_identity),
+        "contact_account": (
+            schemas.Account.from_identity(admin_identity) if admin_identity else None
+        ),
         "rules": [],
     }
 
@@ -141,7 +143,11 @@ def instance_info_v2(request) -> dict:
         },
         "contact": {
             "email": "",
-            "account": schemas.Account.from_identity(admin_identity),
+            "account": (
+                schemas.Account.from_identity(admin_identity)
+                if admin_identity
+                else None
+            ),
         },
         "rules": [],
     }
