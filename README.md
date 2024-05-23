@@ -17,3 +17,5 @@ This fork has a number of changes/additions:
 * Support for the `notify` attribute on follows
 * Hashtag history
 * Trending hashtags and statuses
+* Fetch follow/post counts for non-local identities
+* Relay support
