@@ -476,7 +476,7 @@ if SETUP.MEDIA_BACKEND:
         raise ValueError(f"Unsupported media backend {SETUP.MEDIA_BACKEND.scheme}")
 
 CACHES = {
-    "default": django_cache_url.parse(SETUP.CACHES_DEFAULT or "dummy://"),
+    "default": django_cache_url.parse(str(SETUP.CACHES_DEFAULT or "dummy://")),
 }
 
 if SETUP.ERROR_EMAILS:
