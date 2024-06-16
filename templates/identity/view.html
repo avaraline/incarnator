@@ -8,6 +8,9 @@
 {% endblock %}
 
 {% block extra_head %}
+    {% if not identity.indexable %}
+        <meta name="robots" content="noindex">
+    {% endif %}
     {% if identity.local %}
         <link rel="alternate" type="application/rss+xml" title="RSS feed for {{ identity.name }}" href="rss/" />
     {% endif %}
