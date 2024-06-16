@@ -191,6 +191,13 @@ def status_context(request, id: str) -> schemas.Context:
     )
 
 
+@scope_required("read:statuses")
+@api_view.get
+def status_history(request, id: str) -> list:
+    # not implemented yet
+    return []
+
+
 @scope_required("write:favourites")
 @api_view.post
 def favourite_status(request, id: str) -> schemas.Status:

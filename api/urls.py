@@ -148,6 +148,7 @@ urlpatterns = [
     # Statuses
     path("v1/statuses", statuses.post_status),
     path("v1/statuses/<id>/context", statuses.status_context),
+    path("v1/statuses/<id>/history", statuses.status_history),
     path("v1/statuses/<id>/favourite", statuses.favourite_status),
     path("v1/statuses/<id>/unfavourite", statuses.unfavourite_status),
     path("v1/statuses/<id>/favourited_by", statuses.favourited_by),
@@ -180,6 +181,7 @@ urlpatterns = [
     path("v1/conversations", timelines.conversations),
     path("v1/favourites", timelines.favourites),
     # Trends
+    path("v1/trends", trends.trends_tags),  # legacy trending API
     path("v1/trends/tags", trends.trends_tags),
     path("v1/trends/statuses", trends.trends_statuses),
     path("v1/trends/links", trends.trends_links),
