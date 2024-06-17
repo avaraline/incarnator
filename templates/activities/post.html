@@ -6,6 +6,12 @@
     {% include "_opengraph.html" with opengraph_local=post.to_opengraph_dict %}
 {% endblock %}
 
+{% block extra_head %}
+    {% if not identity.indexable %}
+        <meta name="robots" content="noindex">
+    {% endif %}
+{% endblock %}
+
 {% block content %}
     <section class="invisible">
         {% for ancestor in ancestors reversed %}
