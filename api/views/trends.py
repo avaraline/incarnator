@@ -8,6 +8,7 @@ from django.utils import timezone
 from activities.models import Hashtag, Post
 from api import schemas
 from api.decorators import scope_required
+from core.models import Config
 from hatchway import api_view
 
 
@@ -21,7 +22,7 @@ def trends_tags(
     popular_tags = cache.get("trends_tags", None)
     if popular_tags is None:
         popular_tags = Hashtag.popular(limit=100, offset=0)
-        cache.set("trends_tags", popular_tags, 3600)
+        cache.set("trends_tags", popular_tags, Config.system.cache_timeout_trends)
     return schemas.Tag.map_from_hashtags(
         popular_tags[offset : offset + limit],
         domain=request.domain,
@@ -49,7 +50,9 @@ def trends_statuses(
             .order_by("-num_interactions", "-published")
             .values_list("id", flat=True)[:100]
         )
-        cache.set("trends_statuses", popular_post_ids, 3600)
+        cache.set(
+            "trends_statuses", popular_post_ids, Config.system.cache_timeout_trends
+        )
     posts = (
         Post.objects.not_hidden()
         .filter(id__in=popular_post_ids[offset : offset + limit])
