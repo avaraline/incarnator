@@ -147,9 +147,25 @@ class PostStates(StateGraph):
     @classmethod
     def handle_deleted(cls, instance: "Post"):
         """
-        Creates all needed fan-out objects needed to delete a Post.
+        When a post is deleted:
+        - Undo all interactions (so that remote follower of the booster will unsee it from their timeline)
+        - Remove all timeline events
+        - Remove all bookmarks
+        - Fan out the deletion, fanout of remote post deletion is not supported yet
         """
-        cls.targets_fan_out(instance, FanOut.Types.post_deleted)
+        from users.models import Bookmark
+        from .post_interaction import PostInteraction, PostInteractionStates
+        from .timeline_event import TimelineEvent
+
+        TimelineEvent.objects.filter(subject_post=instance).delete()
+        Bookmark.objects.filter(post=instance).delete()
+        PostInteraction.transition_perform_queryset(
+            PostInteraction.objects.filter(
+                post=instance,
+                state__in=PostInteractionStates.group_active(),
+            ),
+            PostInteractionStates.undone,
+        )
         return cls.deleted_fanned_out
 
     @classmethod
@@ -1182,7 +1198,7 @@ class Post(StatorModel):
             # Ensure the actor on the request authored the post
             if not post.author.actor_uri == data["actor"]:
                 raise ValueError("Actor on delete does not match object")
-            post.delete()
+            post.transition_perform(PostStates.deleted)
 
     @classmethod
     def handle_fetch_internal(cls, data):

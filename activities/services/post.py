@@ -149,17 +149,15 @@ class PostService:
 
     def delete(self):
         """
-        Marks a post as deleted and immediately cleans up its timeline events etc.
+        Marks a post as deleted and cleans up authors timeline events,
+        remaining cleanups will be done in stator.
         """
         self.post.transition_perform(PostStates.deleted)
-        TimelineEvent.objects.filter(subject_post=self.post).delete()
-        PostInteraction.transition_perform_queryset(
-            PostInteraction.objects.filter(
-                post=self.post,
-                state__in=PostInteractionStates.group_active(),
-            ),
-            PostInteractionStates.undone,
-        )
+        TimelineEvent.objects.filter(
+            identity=self.post.author,
+            type__in=[TimelineEvent.Types.post, TimelineEvent.Types.boost],
+            subject_post=self.post,
+        ).delete()
 
     def pin_as(self, identity: Identity):
         if identity != self.post.author:
