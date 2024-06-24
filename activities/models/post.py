@@ -159,6 +159,8 @@ class PostStates(StateGraph):
 
         TimelineEvent.objects.filter(subject_post=instance).delete()
         Bookmark.objects.filter(post=instance).delete()
+        if instance.local:
+            cls.targets_fan_out(instance, FanOut.Types.post_deleted)
         PostInteraction.transition_perform_queryset(
             PostInteraction.objects.filter(
                 post=instance,

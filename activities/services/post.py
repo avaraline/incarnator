@@ -153,6 +153,7 @@ class PostService:
         remaining cleanups will be done in stator.
         """
         self.post.transition_perform(PostStates.deleted)
+        # clean up author's timeline to avoid showing deleted posts if they immediately refresh
         TimelineEvent.objects.filter(
             identity=self.post.author,
             type__in=[TimelineEvent.Types.post, TimelineEvent.Types.boost],
