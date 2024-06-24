@@ -248,6 +248,7 @@ class Config(models.Model):
         cache_timeout_page_timeline: int = 60 * 3
         cache_timeout_page_post: int = 60 * 2
         cache_timeout_identity_feed: int = 60 * 5
+        cache_timeout_trends: int = 60 * 60
 
         restricted_usernames: str = "\n".join(
             [
