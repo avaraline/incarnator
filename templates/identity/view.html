@@ -5,6 +5,7 @@
 
 {% block opengraph %}
     {% include "_opengraph.html" with opengraph_local=identity.to_opengraph_dict %}
+    <meta name="fediverse:creator" content="@{{ identity.handle }}" />
 {% endblock %}
 
 {% block extra_head %}
