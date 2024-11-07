@@ -40,8 +40,8 @@ def test_extract_signifier():
 
 
 def test_extract_output_type():
-    assert extract_output_type(int) == int
-    assert extract_output_type(ApiResponse[int]) == int
+    assert extract_output_type(int) is int
+    assert extract_output_type(ApiResponse[int]) is int
     assert extract_output_type(ApiResponse[int | str]) == int | str
 
 

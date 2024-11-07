@@ -37,10 +37,8 @@ dependencies = [
 readme = "README.md"
 requires-python = ">= 3.11"
 
-[tool.rye]
-managed = true
-virtual = true
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "mock>=5.1.0",
     "pre-commit>=3.7.0",
     "pytest-asyncio>=0.23.6",
@@ -51,6 +49,7 @@ dev-dependencies = [
 
 [tool.pytest.ini_options]
 addopts = "--tb=short --ds=takahe.settings --import-mode=importlib"
+asyncio_default_fixture_loop_scope = "function"
 filterwarnings = [
     "ignore:There is no current event loop",
     "ignore:No directory at",

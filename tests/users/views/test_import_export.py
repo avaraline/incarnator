@@ -9,6 +9,7 @@ from users.services import IdentityService
 
 
 @pytest.mark.django_db
+@pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
 def test_import_following(
     client_with_user: Client,
     identity: Identity,
@@ -91,6 +92,7 @@ def test_export_followers(
 
 
 @pytest.mark.django_db
+@pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
 def test_export_blocks(
     client_with_user: Client,
     identity: Identity,
@@ -128,6 +130,7 @@ def test_export_blocks(
 
 
 @pytest.mark.django_db
+@pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
 def test_export_mutes(
     client_with_user: Client,
     identity: Identity,

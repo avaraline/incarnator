@@ -19,7 +19,13 @@ class StateGraph:
         # Collect state members
         cls.states = {}
         for name, value in cls.__dict__.items():
-            if name in ["__module__", "__doc__", "states"]:
+            if name in [
+                "__module__",
+                "__doc__",
+                "__firstlineno__",
+                "__static_attributes__",
+                "states",
+            ]:
                 pass
             elif name in ["initial_state", "terminal_states", "choices"]:
                 raise ValueError(f"Cannot name a state {name} - this is reserved")

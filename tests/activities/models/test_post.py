@@ -7,6 +7,9 @@ from users.models import Identity, InboxMessage
 
 
 @pytest.mark.django_db
+@pytest.mark.httpx_mock(
+    assert_all_requests_were_expected=False, can_send_already_matched_responses=True
+)
 def test_fetch_post(httpx_mock: HTTPXMock, config_system):
     """
     Tests that a post we don't have locally can be fetched by by_object_uri

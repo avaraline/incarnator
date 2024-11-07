@@ -17,9 +17,8 @@ compose_down:
 
 # Development Setup
 .venv:
-	python3 -m venv .venv
-	. .venv/bin/activate
-	python3 -m pip install -r requirements-dev.lock
+	uv sync
+	source .venv/bin/activate
 
 .git/hooks/pre-commit: .venv
 	python3 -m pre_commit install

@@ -90,6 +90,7 @@ def test_search_not_found(httpx_mock: HTTPXMock, api_client):
         "application/activity+json",
     ],
 )
+@pytest.mark.httpx_mock(can_send_already_matched_responses=True)
 def test_search(
     content_type: str,
     encoding: str,
