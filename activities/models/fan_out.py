@@ -4,7 +4,7 @@ from django.db import models
 from activities.models.timeline_event import TimelineEvent
 from core.ld import canonicalise
 from stator.models import State, StateField, StateGraph, StatorModel
-from users.models import Block, FollowStates
+from users.models import Block, FollowStates, Identity
 
 
 class FanOutStates(StateGraph):
@@ -242,9 +242,33 @@ class FanOutStates(StateGraph):
                 except httpx.RequestError:
                     return
 
+            # Handle move for local follower
+            case (FanOut.Types.identity_moved, True):
+                from users.services import IdentityService
+
+                identity = instance.subject_identity
+                if identity.has_moved() and identity.aliases:
+                    follower = IdentityService(instance.identity)
+                    new_identity = Identity.by_actor_uri(identity.aliases[0])
+                    follower.unfollow(identity)
+                    follower.follow(new_identity)
+                    # TODO send MOVE notification to follower
+
             # Handle sending identity moved to remote
             case (FanOut.Types.identity_moved, False):
-                raise NotImplementedError()
+                identity = instance.subject_identity
+                if identity.has_moved() and identity.aliases:
+                    try:
+                        identity.signed_request(
+                            method="post",
+                            uri=(
+                                instance.identity.shared_inbox_uri
+                                or instance.identity.inbox_uri
+                            ),
+                            body=canonicalise(identity.to_move_ap()),
+                        )
+                    except httpx.RequestError:
+                        return
 
             # Sending identity edited/deleted to local is a no-op
             case (FanOut.Types.identity_edited, True):

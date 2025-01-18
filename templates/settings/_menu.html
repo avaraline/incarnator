@@ -40,6 +40,10 @@
                     <i class="fa-solid fa-door-open"></i>
                     <span>Migrate Inbound</span>
                 </a>
+                <a href="{% url "settings_migrate_out" handle=identity.handle %}" {% if section == "migrate_out" %}class="selected"{% endif %} title="Interface">
+                    <i class="fa-solid fa-door-open"></i>
+                    <span>Migrate Outbound</span>
+                </a>
             {% endif %}
             <a href="{% url "settings_tokens" handle=identity.handle %}" {% if section == "tokens" %}class="selected"{% endif %} title="Authorized Apps">
                 <i class="fa-solid fa-window-restore"></i>

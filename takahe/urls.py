@@ -87,6 +87,11 @@ urlpatterns = [
         name="settings_migrate_in",
     ),
     path(
+        "@<handle>/settings/migrate_out/",
+        settings.MigrateOutPage.as_view(),
+        name="settings_migrate_out",
+    ),
+    path(
         "@<handle>/settings/tokens/",
         settings.TokensRoot.as_view(),
         name="settings_tokens",

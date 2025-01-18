@@ -17,7 +17,7 @@
         </fieldset>
 
         <div class="buttons">
-            <button>Add</button>
+            <button {% if moved %}disabled{% endif %}>Add</button>
         </div>
 
     </form>
@@ -26,7 +26,14 @@
         <h2 class="above">Current Aliases</h2>
         <table>
             {% for alias in aliases %}
-                <tr><td>{{ alias.handle }} <a href=".?remove_alias={{ alias.actor_uri|urlencode }}" class="button danger">Remove Alias</button></td></tr>
+            <form action="?remove_alias=1" method="POST">
+                <tr><td>{{ alias.handle }}
+                </td><td>
+                    {% csrf_token %}
+                    <input type="hidden" name="alias" value="{{ alias.handle }}">
+                    <button {% if moved %}disabled{% endif %} class="button danger">Remove Alias</button>
+                </td></tr>
+            </form>
             {% empty %}
                 <tr><td class="empty">You have no aliases.</td></tr>
             {% endfor %}
