@@ -428,8 +428,9 @@ class Identity(StatorModel):
             self.save()
 
     def add_alias(self, actor_uri: str):
-        self.aliases = list(set((self.aliases or []) + [actor_uri]))
-        self.save()
+        if not self.aliases or actor_uri not in self.aliases:
+            self.aliases = [actor_uri] + (self.aliases or [])
+            self.save()
 
     def remove_alias(self, actor_uri: str):
         self.aliases = [x for x in (self.aliases or []) if x != actor_uri]

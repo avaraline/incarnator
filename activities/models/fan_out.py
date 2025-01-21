@@ -252,7 +252,6 @@ class FanOutStates(StateGraph):
                     new_identity = Identity.by_actor_uri(identity.aliases[0])
                     follower.unfollow(identity)
                     follower.follow(new_identity)
-                    # TODO send MOVE notification to follower
 
             # Handle sending identity moved to remote
             case (FanOut.Types.identity_moved, False):
