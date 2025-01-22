@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
+        extra="ignore",
         env_prefix="TAKAHE_",
         env_file=TAKAHE_ENV_FILE,
         env_file_encoding="utf-8",

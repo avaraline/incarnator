@@ -52,7 +52,7 @@ class Compose(IdentityViewMixin, FormView):
                 attrs={
                     "_": f"""
                         on change
-                            if me.files[0].size > {settings.SETUP.MEDIA_MAX_IMAGE_FILESIZE_MB * 1024 ** 2}
+                            if me.files[0].size > {settings.SETUP.MEDIA_MAX_IMAGE_FILESIZE_MB * 1024**2}
                                 add [@disabled=] to #upload
 
                                 remove <ul.errorlist/>
@@ -132,7 +132,7 @@ class Compose(IdentityViewMixin, FormView):
                     # Erase the file from our data to stop trying to show it again
                     self.files = {}
                     raise forms.ValidationError(
-                        f"File must be {max_mb}MB or less (actual: {value.size / 1024 ** 2:.2f})"
+                        f"File must be {max_mb}MB or less (actual: {value.size / 1024**2:.2f})"
                     )
             return value
 
