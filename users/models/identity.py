@@ -72,6 +72,8 @@ class IdentityStates(StateGraph):
 
     updated.transitions_to(moved)
     moved.transitions_to(moved_fanned_out)
+    moved.transitions_to(updated)
+    moved_fanned_out.transitions_to(updated)
 
     @classmethod
     def group_deleted(cls):
@@ -426,12 +428,16 @@ class Identity(StatorModel):
             self.save()
 
     def add_alias(self, actor_uri: str):
-        self.aliases = (self.aliases or []) + [actor_uri]
-        self.save()
+        if not self.aliases or actor_uri not in self.aliases:
+            self.aliases = [actor_uri] + (self.aliases or [])
+            self.save()
 
     def remove_alias(self, actor_uri: str):
         self.aliases = [x for x in (self.aliases or []) if x != actor_uri]
         self.save()
+
+    def has_moved(self):
+        return self.state in [IdentityStates.moved, IdentityStates.moved_fanned_out]
 
     ### Push Notifications ###
 
@@ -462,8 +468,10 @@ class Identity(StatorModel):
 
     @classmethod
     def by_handle(cls, handle, fetch: bool = False) -> Optional["Identity"]:
-        username, domain = handle.lstrip("@").split("@", 1)
-        return cls.by_username_and_domain(username=username, domain=domain, fetch=fetch)
+        h = handle.lstrip("@").split("@")
+        if len(h) != 2:
+            return None
+        return cls.by_username_and_domain(username=h[0], domain=h[1], fetch=fetch)
 
     @classmethod
     def by_username_and_domain(
@@ -690,6 +698,8 @@ class Identity(StatorModel):
             ]
         if self.aliases:
             response["alsoKnownAs"] = self.aliases
+        if self.has_moved() and self.aliases:
+            response["copiedTo"] = self.aliases[0]
         # Emoji
         emojis = Emoji.emojis_from_content(
             (self.name or "") + " " + (self.summary or ""), None
@@ -732,6 +742,18 @@ class Identity(StatorModel):
             "id": self.actor_uri + "#delete",
             "actor": self.actor_uri,
             "object": object,
+        }
+
+    def to_move_ap(self):
+        """
+        Return AP JSON for move, see fep-7628
+        """
+        return {
+            "type": "Move",
+            "id": self.actor_uri + "#move-" + str(self.updated),
+            "actor": self.actor_uri,
+            "object": self.actor_uri,
+            "target": self.aliases[0],
         }
 
     ### ActivityPub (inbound) ###
@@ -1037,6 +1059,7 @@ class Identity(StatorModel):
         self.indexable = document.get("toot:indexable", False)
         # Profile links/metadata
         self.metadata = []
+        self.aliases = document.get("alsoKnownAs")
         for attachment in get_list(document, "attachment"):
             if (
                 attachment["type"] == "PropertyValue"

@@ -181,9 +181,6 @@ class Settings(BaseSettings):
     STATOR_CONCURRENCY: int = 20
     STATOR_CONCURRENCY_PER_MODEL: int = 4
 
-    # If user migration is allowed (off by default until outbound is done)
-    ALLOW_USER_MIGRATION: bool = False
-
     # Web Push keys
     # Generate via https://web-push-codelab.glitch.me/
     VAPID_PUBLIC_KEY: str | None = None
