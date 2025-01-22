@@ -105,13 +105,8 @@ class FanOutStates(StateGraph):
 
             # Handle deleting local posts
             case (FanOut.Types.post_deleted, True):
-                post = instance.subject_post
-                if instance.identity.local:
-                    # Remove all timeline events mentioning it
-                    TimelineEvent.objects.filter(
-                        identity=instance.identity,
-                        subject_post=post,
-                    ).delete()
+                # already done in Post.handle_deleted
+                pass
 
             # Handle sending remote post deletes
             case (FanOut.Types.post_deleted, False):
