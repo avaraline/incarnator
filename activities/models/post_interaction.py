@@ -6,6 +6,7 @@ from django.utils import timezone
 from activities.models.fan_out import FanOut
 from activities.models.post import Post
 from activities.models.post_types import QuestionData
+from activities.models.timeline_event import TimelineEvent
 from core.ld import format_ld_date, get_str_or_id, parse_ld_date
 from core.snowflake import Snowflake
 from stator.models import State, StateField, StateGraph, StatorModel
@@ -34,6 +35,16 @@ class PostInteractionStates(StateGraph):
         # Boost: send a copy to all people who follow this user (limiting
         # to just local follows if it's a remote boost)
         # Pin: send Add activity to all people who follow this user
+
+        # Boost: add TimelineEvent for booster if they is local
+        if instance.type == PostInteraction.Types.boost and instance.identity.local:
+            TimelineEvent.objects.create(
+                identity=instance.identity,
+                type=TimelineEvent.Types.boost,
+                subject_identity=instance.identity,
+                subject_post=instance.post,
+                subject_post_interaction=instance,
+            )
         if instance.type == instance.Types.boost or instance.type == instance.Types.pin:
             for target in instance.get_targets():
                 FanOut.objects.create(
@@ -45,7 +56,9 @@ class PostInteractionStates(StateGraph):
         # Like: send a copy to the original post author only,
         # if the liker is local or they are
         elif instance.type == instance.Types.like:
-            if instance.identity.local or instance.post.local:
+            if (
+                instance.identity.local or instance.post.local
+            ) and instance.identity_id != instance.post.author_id:
                 FanOut.objects.create(
                     type=FanOut.Types.interaction,
                     identity_id=instance.post.author_id,
@@ -65,14 +78,6 @@ class PostInteractionStates(StateGraph):
                 )
         else:
             raise ValueError("Cannot fan out unknown type")
-        # And one for themselves if they're local and it's a boost
-        if instance.type == PostInteraction.Types.boost and instance.identity.local:
-            FanOut.objects.create(
-                identity_id=instance.identity_id,
-                type=FanOut.Types.interaction,
-                subject_post=instance.post,
-                subject_post_interaction=instance,
-            )
         return cls.fanned_out
 
     @classmethod
@@ -233,7 +238,8 @@ class PostInteraction(StatorModel):
             if target.local:
                 # Local targets always gets the boosts
                 # despite its creator locality
-                deduped_targets.add(target)
+                if target != self.identity:
+                    deduped_targets.add(target)
             elif self.identity.local:
                 # Dedupe the targets based on shared inboxes
                 # (we only keep one per shared inbox)
