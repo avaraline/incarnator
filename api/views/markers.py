@@ -11,9 +11,11 @@ class MarkerSchema(Schema):
 
     last_read_id: str
 
+
 class PostMarkersSchema(Schema):
-    home: MarkerSchema | None = None;
-    notifications: MarkerSchema | None = None;
+    home: MarkerSchema | None = None
+    notifications: MarkerSchema | None = None
+
 
 @scope_required("read:statuses")
 @api_view.get
@@ -29,12 +31,13 @@ def markers(request: HttpRequest) -> dict[str, schemas.Marker]:
 
 @scope_required("write:statuses")
 @api_view.post
-def set_markers(request: HttpRequest, details: PostMarkersSchema) -> dict[str, schemas.Marker]:
+def set_markers(
+    request: HttpRequest, details: PostMarkersSchema
+) -> dict[str, schemas.Marker]:
     markers = {}
     for timeline, defaults in details.model_dump(exclude_none=True).items():
         marker, created = request.identity.markers.get_or_create(
-            timeline=timeline,
-            defaults=defaults
+            timeline=timeline, defaults=defaults
         )
         if not created:
             marker.last_read_id = defaults["last_read_id"]
