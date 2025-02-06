@@ -666,6 +666,7 @@ class Identity(StatorModel):
             "url": self.absolute_profile_uri(),
             "toot:discoverable": self.discoverable,
             "toot:indexable": self.indexable,
+            "attributionDomains": [self.domain_id],
         }
         if self.name:
             response["name"] = self.name
