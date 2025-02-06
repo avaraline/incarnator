@@ -666,7 +666,6 @@ class Identity(StatorModel):
             "url": self.absolute_profile_uri(),
             "toot:discoverable": self.discoverable,
             "toot:indexable": self.indexable,
-            "attributionDomains": [self.domain_id],
         }
         if self.name:
             response["name"] = self.name
@@ -709,6 +708,9 @@ class Identity(StatorModel):
             response["tag"] = []
             for emoji in emojis:
                 response["tag"].append(emoji.to_ap_tag())
+        # Attribution (TODO: user setting for domains allowed to attribute content)
+        if self.domain_id:
+            response["attributionDomains"] = [self.domain_id]
         return response
 
     def to_ap_tag(self):
