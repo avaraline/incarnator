@@ -93,7 +93,7 @@ class FlatPage(TemplateView):
     def get(self, request, *args, **kwargs):
         if self.config_option is None:
             raise ValueError("No config option provided")
-        self.content = getattr(request.config, self.config_option)
+        self.content = getattr(request.config, self.config_option) or ""
         # If the content is a plain URL, then redirect to it instead
         if (
             "\n" not in self.content

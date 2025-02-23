@@ -46,6 +46,8 @@ class Signup(FormView):
                 policies.append("<a href='/pages/terms/'>Terms of Service</a>")
             if Config.system.policy_privacy:
                 policies.append("<a href='/pages/privacy/'>Privacy Policy</a>")
+            if Config.system.policy_legal:
+                policies.append("<a href='/pages/legal/'>Legal Notice</a>")
             if policies:
                 links = ""
                 for i, policy in enumerate(policies):
