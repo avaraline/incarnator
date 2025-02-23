@@ -224,6 +224,7 @@ class Config(models.Model):
         policy_privacy: str = ""
         policy_rules: str = ""
         policy_issues: str = ""
+        policy_legal: str = ""
 
         signup_allowed: bool = True
         signup_text: str = ""

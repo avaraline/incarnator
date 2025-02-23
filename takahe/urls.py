@@ -322,6 +322,12 @@ urlpatterns = [
         core.FlatPage.as_view(title="Report a Problem", config_option="policy_issues"),
         name="policy_issues",
     ),
+    path(
+        "pages/legal/",
+        core.FlatPage.as_view(title="Legal Notice", config_option="policy_legal"),
+        name="policy_legal",
+    ),
+    path("impressum", RedirectView.as_view(url="/pages/legal/")),
     # Annoucements
     path("announcements/<id>/dismiss/", announcements.AnnouncementDismiss.as_view()),
     # Debug aids
