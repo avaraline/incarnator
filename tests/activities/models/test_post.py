@@ -464,7 +464,9 @@ def test_inbound_posts(
 
     # Run stator and ensure that deleted the post
     stator.run_single_cycle()
-    assert not Post.objects.filter(object_uri="https://remote.test/test-post").exists()
+    stator.run_single_cycle()
+    post = Post.objects.get(object_uri="https://remote.test/test-post")
+    assert post.state == str(PostStates.deleted_fanned_out)
 
     # Create an inbound new post message with only contentMap
     message = {
