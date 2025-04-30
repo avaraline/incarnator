@@ -9,7 +9,7 @@ from activities.models.post_types import QuestionData
 from core.ld import format_ld_date, get_str_or_id, parse_ld_date
 from core.snowflake import Snowflake
 from stator.models import State, StateField, StateGraph, StatorModel
-from users.models.identity import Identity
+from users.models import Identity, Block
 
 
 class PostInteractionStates(StateGraph):
@@ -21,6 +21,7 @@ class PostInteractionStates(StateGraph):
     new.transitions_to(fanned_out)
     fanned_out.transitions_to(undone)
     undone.transitions_to(undone_fanned_out)
+    new.transitions_to(undone_fanned_out)
 
     @classmethod
     def group_active(cls):
@@ -34,6 +35,14 @@ class PostInteractionStates(StateGraph):
         # Boost: send a copy to all people who follow this user (limiting
         # to just local follows if it's a remote boost)
         # Pin: send Add activity to all people who follow this user
+
+        # Discard if blocked
+        if Block.maybe_get(
+            source=instance.post.author_id,
+            target=instance.identity_id,
+            require_active=True,
+        ):
+            return cls.undone_fanned_out
         if instance.type == instance.Types.boost or instance.type == instance.Types.pin:
             for target in instance.get_targets():
                 FanOut.objects.create(
@@ -250,6 +259,15 @@ class PostInteraction(StatorModel):
     @classmethod
     def create_votes(cls, post, identity, choices) -> list["PostInteraction"]:
         question = post.type_data
+        if (
+            Block.objects.filter(
+                source=post.author, target=identity, mute=False
+            ).exists()
+            or Block.objects.filter(
+                source=identity, target=post.author, mute=False
+            ).exists()
+        ):
+            raise ValueError("Validation failed: blocked")
 
         if question.end_time and timezone.now() > question.end_time:
             raise ValueError("Validation failed: The poll has already ended")

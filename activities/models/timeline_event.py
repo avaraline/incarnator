@@ -3,6 +3,7 @@ from django.utils import timezone
 
 from api.models.push import PushType
 from core.ld import format_ld_date
+from users.models import Bookmark, Identity
 
 
 class TimelineEvent(models.Model):
@@ -249,6 +250,11 @@ class TimelineEvent(models.Model):
         Internal stator handler for clearing all events by a user off another
         user's timeline.
         """
+        from activities.models.post_interaction import (
+            PostInteraction,
+            PostInteractionStates,
+        )
+
         actor_id = message["actor"]
         object_id = message["object"]
         full_erase = message.get("fullErase", False)
@@ -264,6 +270,27 @@ class TimelineEvent(models.Model):
                 type=cls.Types.post, subject_post__author_id=object_id
             ) | models.Q(type=cls.Types.boost, subject_identity_id=object_id)
         TimelineEvent.objects.filter(q, identity_id=actor_id).delete()
+        if full_erase:
+            Bookmark.objects.filter(
+                identity_id=actor_id, post__author_id=object_id
+            ).delete()
+            Bookmark.objects.filter(
+                identity_id=actor_id, post__author_id=object_id
+            ).delete()
+            PostInteraction.objects.filter(
+                identity=actor_id, post__author=object_id
+            ).update(state=PostInteractionStates.undone)
+            PostInteraction.objects.filter(
+                identity=object_id, post__author=actor_id
+            ).update(state=PostInteractionStates.undone)
+            actor = Identity.objects.filter(pk=actor_id).first()
+            if actor:
+                for post in actor.posts_mentioning.filter(author_id=object_id):
+                    post.mentions.remove(actor)
+                    parent = post.in_reply_to_post()
+                    if parent and parent.author_id == actor_id:
+                        # recalculate reply count
+                        parent.calculate_stats()
 
     ### Mastodon Client API ###
 
