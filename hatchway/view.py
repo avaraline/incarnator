@@ -300,7 +300,7 @@ class ApiView:
             )
         kwargs = {
             name: getattr(model_instance, name)
-            for name in model_instance.model_fields
+            for name in self.input_model.model_fields
             if values[name] is not None  # Trim out missing fields
         }
         # Add in any files
