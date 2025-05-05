@@ -1,4 +1,5 @@
-from django.http import Http404, JsonResponse
+from django.conf import settings
+from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.utils.decorators import method_decorator
 from django.views.decorators.vary import vary_on_headers
@@ -62,6 +63,8 @@ class Individual(TemplateView):
         return context
 
     def serve_object(self):
+        if settings.SETUP.NO_FEDERATION:
+            return HttpResponse(status=503)
         # If this not a local post, redirect to its canonical URI
         if not self.post_obj.local:
             return redirect(self.post_obj.object_uri)
