@@ -35,6 +35,7 @@
                 <td class="name">
                     <a href="{{ identity.urls.admin_edit }}?page={{ page_obj.number }}" class="overlay"></a>
                     {{ identity.html_name_or_handle }}
+                    {% if identity.actor_type != 'person' %}<small>{{ identity.actor_type }}</small>{% endif %}
                     <small>@{{ identity.handle }}</small>
                 </td>
                 <td>

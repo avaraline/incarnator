@@ -82,6 +82,7 @@ class IdentityStates(StateGraph):
     @classmethod
     def targets_fan_out(cls, identity: "Identity", type_: str) -> None:
         from activities.models import FanOut
+
         from users.models import Follow
 
         # Fan out to each target
@@ -133,6 +134,7 @@ class IdentityStates(StateGraph):
             PostStates,
             TimelineEvent,
         )
+
         from users.models import (
             Bookmark,
             Follow,
@@ -607,6 +609,10 @@ class Identity(StatorModel):
     @property
     def limited(self) -> bool:
         return self.restriction == self.Restriction.limited
+
+    @property
+    def is_group(self) -> bool:
+        return self.actor_type == "group"
 
     ### ActivityPub (outbound) ###
 
