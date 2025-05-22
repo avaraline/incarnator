@@ -9,6 +9,7 @@
 .venv
 .vscode
 /*.env*
+/*.sh
 /build
 /cache/
 /docs/_build
