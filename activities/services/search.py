@@ -74,7 +74,7 @@ class SearchService:
 
         # Fetch the provided URL as the system actor to retrieve the AP JSON
         try:
-            response = SystemActor().signed_request(
+            response = (self.identity or SystemActor()).signed_request(
                 method="get",
                 uri=self.query,
             )
@@ -103,7 +103,9 @@ class SearchService:
             # Try and retrieve the post by URI
             # (we do not trust the JSON we just got - fetch from source!)
             try:
-                return Post.by_object_uri(document["id"], fetch=True)
+                return Post.by_object_uri(
+                    document["id"], fetch=True, fetch_as=self.identity
+                )
             except Post.DoesNotExist:
                 return None
 
