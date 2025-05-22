@@ -591,7 +591,6 @@ class Post(StatorModel):
         content: str,
         summary: str | None = None,
         sensitive: bool | None = None,
-        visibility: int = Visibilities.public,
         attachments: list | None = None,
         attachment_attributes: list | None = None,
         language: str | None = None,
@@ -606,7 +605,6 @@ class Post(StatorModel):
             )
             self.summary = summary or None
             self.sensitive = bool(summary) if sensitive is None else sensitive
-            self.visibility = visibility
             if language is None or language == "":
                 language = self.author.config_identity.preferred_posting_language
             self.language = language
