@@ -114,22 +114,40 @@ def domain2() -> Domain:
 
 @pytest.fixture
 @pytest.mark.django_db
-def identity(user, domain, keypair) -> Identity:
+def identity_factory(user, domain, keypair):
+    """
+    Factory for creating identities with custom parameters
+    """
+
+    def _create_identity(username="test", actor_type="person", **kwargs):
+        # Only set default name if not provided in kwargs
+        if "name" not in kwargs:
+            kwargs["name"] = f"{username.title()} User"
+
+        identity = Identity.objects.create(
+            actor_uri=f"https://example.com/@{username}@example.com/",
+            inbox_uri=f"https://example.com/@{username}@example.com/inbox/",
+            private_key=keypair["private_key"],
+            public_key=keypair["public_key"],
+            username=username,
+            domain=domain,
+            actor_type=actor_type,
+            local=True,
+            **kwargs,
+        )
+        identity.users.set([user])
+        return identity
+
+    return _create_identity
+
+
+@pytest.fixture
+@pytest.mark.django_db
+def identity(identity_factory) -> Identity:
     """
     Creates a basic test identity with a user and domain.
     """
-    identity = Identity.objects.create(
-        actor_uri="https://example.com/@test@example.com/",
-        inbox_uri="https://example.com/@test@example.com/inbox/",
-        private_key=keypair["private_key"],
-        public_key=keypair["public_key"],
-        username="test",
-        domain=domain,
-        name="Test User",
-        local=True,
-    )
-    identity.users.set([user])
-    return identity
+    return identity_factory(username="test", actor_type="person", name="Test User")
 
 
 @pytest.fixture

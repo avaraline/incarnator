@@ -67,6 +67,11 @@
                     {% endfor %}
                 </p>
             </fieldset>
+            <fieldset>
+                <legend>Actor Type</legend>
+                <p>{% include "forms/_field.html" with field=form.actor_type %}</p>
+                <p class="help">Type "group" has special behavior: automatically boost posts from followed users.</p>
+            </fieldset>
         {% endif %}
         <fieldset>
             <legend>Technical</legend>
@@ -117,7 +122,7 @@
         <div class="buttons">
             <a href="{{ identity.urls.admin }}?page={{ page }}" class="button secondary left">Back</a>
             <a href="{{ identity.urls.view }}" class="button secondary">View Profile</a>
-            <button>Save Notes</button>
+            <button>Save</button>
         </div>
     </form>
 {% endblock %}
