@@ -14,10 +14,12 @@ repos:
       - id: pretty-format-json
         args: ["--autofix", "--indent=4", "--no-ensure-ascii"]
       - id: trailing-whitespace
-
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.6
+    # Ruff version.
+    rev: v0.11.10
     hooks:
-      - id: ruff
-        args: ["--fix"]
+      # Run the linter.
+      - id: ruff-check
+        args: [ --fix ]
+      # Run the formatter.
       - id: ruff-format
