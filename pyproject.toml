@@ -6,7 +6,6 @@ authors = [
     { name = "Dan Watson", email = "dcwatson@gmail.com" }
 ]
 dependencies = [
-    "blurhash-python>=1.2.2",
     "cachetools>=5.3.3",
     "cryptography>=42.0.5",
     "dj-database-url>=2.1.0",
@@ -33,6 +32,7 @@ dependencies = [
     "uvicorn>=0.29.0",
     "whitenoise>=6.6.0",
     "pywebpush>=2.0.0",
+    "blurhash>=1.1.4",
 ]
 readme = "README.md"
 requires-python = ">= 3.11"
