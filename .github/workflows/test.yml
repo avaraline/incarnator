@@ -5,6 +5,7 @@ on:
     paths:
       - '**.py'
       - 'requirements-dev.lock'
+      - '.github/workflows/test.yml'
     branches:
       - main
   pull_request:
