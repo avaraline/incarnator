@@ -45,6 +45,7 @@ from core.ld import (
 from core.snowflake import Snowflake
 from stator.exceptions import TryAgainLater
 from stator.models import State, StateField, StateGraph, StatorModel
+from users.models.block import Block
 from users.models.follow import FollowStates
 from users.models.hashtags import HashtagFollow
 from users.models.identity import Identity, IdentityStates
@@ -204,7 +205,12 @@ class PostQuerySet(models.QuerySet):
             return query.filter(in_reply_to__isnull=True)
         return query
 
-    def visible_to(self, identity: Identity | None, include_replies: bool = False):
+    def visible_to(
+        self,
+        identity: Identity | None,
+        include_replies: bool = False,
+        include_muted: bool = False,
+    ):
         if identity is None:
             return self.unlisted(include_replies=include_replies)
         # It's way faster to check follows and mentioned in subselects and drop the
@@ -237,7 +243,22 @@ class PostQuerySet(models.QuerySet):
             | models.Q(author=identity)
         )
         if not include_replies:
-            return query.filter(in_reply_to__isnull=True)
+            query = query.filter(in_reply_to__isnull=True)
+        if identity:
+            params = {"source_id": identity.pk}
+            if include_muted:
+                params["mute"] = False
+            rejecting_ids = list(
+                Block.objects.active().filter(**params).values_list("target", flat=True)
+            ) + list(
+                Block.objects.active()
+                .filter(
+                    target_id=identity.pk,
+                    mute=False,
+                )
+                .values_list("source", flat=True)
+            )
+            query = query.exclude(author_id__in=rejecting_ids)
         return query
 
     def tagged_with(self, hashtag: str | Hashtag):
@@ -643,7 +664,13 @@ class Post(StatorModel):
                 domain=domain,
                 fetch=True,
             )
-            if identity is not None and not identity.deleted:
+            if (
+                identity is not None
+                and not identity.deleted
+                and not Block.maybe_get(
+                    source=identity, target=author, require_active=True
+                )
+            ):
                 mentions.add(identity)
         return mentions
 
@@ -672,7 +699,11 @@ class Post(StatorModel):
                 type=PostInteraction.Types.boost,
                 state__in=PostInteractionStates.group_active(),
             ).count(),
-            "replies": Post.objects.filter(in_reply_to=self.object_uri).count(),
+            # only count replies visible to post's author
+            "replies": Post.objects.filter(in_reply_to=self.object_uri)
+            .not_hidden()
+            .visible_to(self.author, True)
+            .count(),
         }
         if save:
             self.save()
