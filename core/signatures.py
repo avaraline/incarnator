@@ -196,6 +196,8 @@ class HttpSignature:
         method: Literal["get", "post"] = "post",
         timeout: TimeoutTypes = settings.SETUP.REMOTE_TIMEOUT,
     ):
+        if settings.SETUP.NO_FEDERATION:
+            return httpx.Response(200, json={})
         """
         Performs an async request to the given path, with a document, signed
         as an identity.
