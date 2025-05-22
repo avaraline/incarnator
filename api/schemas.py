@@ -554,3 +554,16 @@ class Marker(Schema):
         marker: users_models.Marker,
     ) -> "Marker":
         return cls(**marker.to_mastodon_json())
+
+
+class Report(Schema):
+    id: str
+    action_taken: bool = False
+    action_taken_at: str | None = None
+    category: str = "other"
+    comment: str
+    forwarded: bool = False
+    created_at: str
+    status_ids: list[int]
+    rule_ids: list[int] | None = None
+    target_account: Account

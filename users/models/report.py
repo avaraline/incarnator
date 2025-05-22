@@ -7,7 +7,7 @@ from django.core.mail import EmailMultiAlternatives
 from django.db import models
 from django.template.loader import render_to_string
 
-from core.ld import canonicalise, get_list
+from core.ld import canonicalise, format_ld_date, get_list
 from core.models import Config
 from core.snowflake import Snowflake
 from stator.models import State, StateField, StateGraph, StatorModel
@@ -33,7 +33,11 @@ class ReportStates(StateGraph):
         ).values_list("email", flat=True):
             recipients.append(mod)
 
-        if instance.forward and not instance.subject_identity.domain.local:
+        if (
+            instance.forward
+            and instance.source_domain.local
+            and not instance.subject_identity.domain.local
+        ):
             system_actor = SystemActor()
             try:
                 system_actor.signed_request(
@@ -125,7 +129,7 @@ class Report(StatorModel):
         related_name="moderated_reports",
     )
 
-    type = models.CharField(max_length=100, choices=Types.choices)
+    type = models.CharField(max_length=100, default="other")
     complaint = models.TextField()
     forward = models.BooleanField(default=False)
     valid = models.BooleanField(null=True)
@@ -149,10 +153,24 @@ class Report(StatorModel):
         Handles an incoming flag
         """
         from activities.models import Post
+
         from users.models import Identity
 
         # Fetch the system actor
         domain_id = urlparse(data["actor"]).hostname
+        source_domain = Domain.get_remote_domain(domain_id)
+        if source_domain is None:
+            raise ValueError("Cannot handle flag: no source domain")
+        if source_domain.blocked:
+            raise ValueError("Cannot handle flag: source domain is blocked")
+        source_identity = Identity.objects.filter(
+            local=False, actor_uri=data["actor"]
+        ).first()
+        if (
+            source_identity
+            and source_identity.restriction == Identity.Restriction.blocked
+        ):
+            raise ValueError("Cannot handle flag: source identity is blocked")
         # Resolve the objects into items
         objects = get_list(data, "object")
         subject_identity = None
@@ -170,7 +188,8 @@ class Report(StatorModel):
         cls.objects.create(
             subject_identity=subject_identity,
             subject_post=subject_post,
-            source_domain=Domain.get_remote_domain(domain_id),
+            source_domain=source_domain,
+            source_identity=source_identity,
             type="remote",
             complaint=str(data.get("content", "")),
         )
@@ -192,4 +211,18 @@ class Report(StatorModel):
             "actor": system_actor.actor_uri,
             "object": objects,
             "content": self.complaint,
+        }
+
+    def to_mastodon_json(self):
+        return {
+            "id": str(self.pk),
+            "action_taken": bool(self.resolved),
+            "action_taken_at": self.resolved,
+            "category": self.type,
+            "comment": self.complaint,
+            "forwarded": self.forward and self.state == ReportStates.sent,
+            "created_at": format_ld_date(self.created),
+            "status_ids": [self.subject_post.pk],
+            "rule_ids": None,
+            "target_account": self.subject_identity.to_mastodon_json(),
         }

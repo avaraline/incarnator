@@ -42,13 +42,7 @@ class Migration(migrations.Migration):
                 (
                     "type",
                     models.CharField(
-                        choices=[
-                            ("spam", "Spam"),
-                            ("hateful", "Hateful"),
-                            ("illegal", "Illegal"),
-                            ("remote", "Remote"),
-                            ("other", "Other"),
-                        ],
+                        default="other",
                         max_length=100,
                     ),
                 ),
