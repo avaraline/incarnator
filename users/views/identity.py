@@ -239,7 +239,7 @@ class IdentityFollows(ListView):
                 {
                     "type": "OrderedCollection",
                     "totalItems": self.get_queryset().count(),
-                    "orderedItems": [],
+                    # "orderedItems": [],
                 }
             ),
             content_type="application/activity+json",
