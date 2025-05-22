@@ -213,9 +213,8 @@ class Domain(StatorModel):
             else:
                 try:
                     for link in response.json().get("links", []):
-                        if (
-                            link.get("rel")
-                            == "http://nodeinfo.diaspora.software/ns/schema/2.0"
+                        if "://nodeinfo.diaspora.software/ns/schema/2." in link.get(
+                            "rel"
                         ):
                             nodeinfo20_url = link.get("href", nodeinfo20_url)
                             break
