@@ -73,7 +73,7 @@ def post_for_id(request: HttpRequest, id: str) -> Post:
     """
     if request.identity:
         queryset = Post.objects.not_hidden().visible_to(
-            request.identity, include_replies=True
+            request.identity, include_replies=True, include_muted=True
         )
     else:
         queryset = Post.objects.not_hidden().unlisted()

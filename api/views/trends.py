@@ -56,6 +56,7 @@ def trends_statuses(
     posts = (
         Post.objects.not_hidden()
         .filter(id__in=popular_post_ids[offset : offset + limit])
+        .visible_to(request.identity)
         .order_by("-published")
     )
     return schemas.Status.map_from_post(list(posts), request.identity)

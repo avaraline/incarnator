@@ -191,7 +191,9 @@ def account_statuses(
     )
     queryset = (
         identity.posts.not_hidden()
-        .unlisted(include_replies=not exclude_replies)
+        .visible_to(
+            request.identity, include_replies=not exclude_replies, include_muted=True
+        )
         .select_related("author", "author__domain")
         .prefetch_related(
             "attachments",
