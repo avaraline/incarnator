@@ -226,9 +226,24 @@ class IdentityFollows(ListView):
             handle,
             local=False,
         )
+        if request.ap_json:
+            return self.serve_ap_json()
         if not Config.load_identity(self.identity).visible_follows:
             raise Http404("Hidden follows")
         return super().get(request, identity=self.identity)
+
+    def serve_ap_json(self):
+        # TODO return list based on Config.load_identity(self.identity).visible_follows
+        return JsonResponse(
+            canonicalise(
+                {
+                    "type": "OrderedCollection",
+                    "totalItems": self.get_queryset().count(),
+                    # "orderedItems": [],
+                }
+            ),
+            content_type="application/activity+json",
+        )
 
     def get_queryset(self):
         if self.inbound:
