@@ -138,6 +138,11 @@ class StatusTag(Schema):
     url: str
 
 
+class StatusApplication(Schema):
+    name: str | None
+    website: str | None
+
+
 class Status(Schema):
     id: str
     uri: str
@@ -168,6 +173,7 @@ class Status(Schema):
     muted: bool = False
     bookmarked: bool = False
     pinned: bool = False
+    application: StatusApplication | None = None
 
     @classmethod
     def from_post(

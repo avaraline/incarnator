@@ -54,3 +54,9 @@ class Application(models.Model):
             "redirect_uris": self.redirect_uris,
             "vapid_key": settings.SETUP.VAPID_PUBLIC_KEY,
         }
+
+    def to_mastodon_status_json(self):
+        return {
+            "name": self.name,
+            "website": self.website,
+        }
