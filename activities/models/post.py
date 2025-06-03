@@ -302,6 +302,15 @@ class Post(StatorModel):
         related_name="posts",
     )
 
+    # The application used to create this post (if created via API)
+    application = models.ForeignKey(
+        "api.Application",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="posts",
+    )
+
     # The state the post is in
     state = StateField(PostStates)
 
@@ -538,6 +547,7 @@ class Post(StatorModel):
         attachments: list | None = None,
         question: dict | None = None,
         language: str | None = None,
+        application=None,
     ) -> "Post":
         with transaction.atomic():
             # Find mentions in this post
@@ -570,6 +580,7 @@ class Post(StatorModel):
                 hashtags=hashtags,
                 in_reply_to=reply_to.object_uri if reply_to else None,
                 language=language,
+                application=application,
             )
             post.object_uri = post.urls.object_uri
             post.url = post.absolute_object_uri()
@@ -1280,6 +1291,9 @@ class Post(StatorModel):
             "card": None,
             "text": self.safe_content_remote(),
             "edited_at": format_ld_date(self.edited) if self.edited else None,
+            "application": self.application.to_mastodon_status_json()
+            if self.application
+            else None,
         }
         if interactions:
             value["favourited"] = self.pk in interactions.get("like", [])
