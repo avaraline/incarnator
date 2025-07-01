@@ -2,7 +2,19 @@ from django.http import HttpRequest
 
 from api import schemas
 from api.decorators import scope_required
-from hatchway import api_view
+from pydantic import ConfigDict
+from hatchway import Schema, api_view
+
+
+class MarkerSchema(Schema):
+    model_config = ConfigDict(coerce_numbers_to_str=True)
+
+    last_read_id: str
+
+
+class PostMarkersSchema(Schema):
+    home: MarkerSchema | None = None
+    notifications: MarkerSchema | None = None
 
 
 @scope_required("read:statuses")
@@ -19,20 +31,16 @@ def markers(request: HttpRequest) -> dict[str, schemas.Marker]:
 
 @scope_required("write:statuses")
 @api_view.post
-def set_markers(request: HttpRequest) -> dict[str, schemas.Marker]:
+def set_markers(
+    request: HttpRequest, details: PostMarkersSchema
+) -> dict[str, schemas.Marker]:
     markers = {}
-    for key, last_id in request.PARAMS.items():
-        if not key.endswith("[last_read_id]"):
-            continue
-        timeline = key.replace("[last_read_id]", "")
+    for timeline, defaults in details.model_dump(exclude_none=True).items():
         marker, created = request.identity.markers.get_or_create(
-            timeline=timeline,
-            defaults={
-                "last_read_id": last_id,
-            },
+            timeline=timeline, defaults=defaults
         )
         if not created:
-            marker.last_read_id = last_id
+            marker.last_read_id = defaults["last_read_id"]
             marker.save()
         markers[timeline] = schemas.Marker.from_marker(marker)
     return markers
