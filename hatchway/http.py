@@ -3,6 +3,7 @@ from typing import Generic, TypeVar
 
 from django.core.serializers.json import DjangoJSONEncoder
 from django.http.response import HttpResponseBase
+from django.utils.functional import cached_property
 
 T = TypeVar("T")
 
@@ -25,19 +26,20 @@ class ApiResponse(Generic[T], HttpResponseBase):
         self.data = data
         self.encoder = encoder
         self.json_dumps_params = json_dumps_params or {}
-        self.json_bytes = None
         kwargs.setdefault("content_type", "application/json")
         super().__init__(**kwargs)
 
     @property
     def content(self):
-        if self.json_bytes is None:
-            self.json_bytes = json.dumps(
-                self.data,
-                cls=self.encoder,
-                **self.json_dumps_params,
-            ).encode("utf-8")
-        return self.json_bytes
+        return self.text.encode("utf-8")
+
+    @cached_property
+    def text(self):
+        return json.dumps(
+            self.data,
+            cls=self.encoder,
+            **self.json_dumps_params,
+        )
 
     def __iter__(self):
         yield self.content
