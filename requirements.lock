@@ -19,7 +19,7 @@ click==8.2.1
 colorama==0.4.6 ; sys_platform == 'win32'
 cryptography==45.0.2
 dj-database-url==2.3.0
-django==4.2.21
+django==5.2.6
 django-cache-url==3.4.5
 django-cors-headers==4.7.0
 django-debug-toolbar==5.2.0

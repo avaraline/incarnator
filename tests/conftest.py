@@ -64,6 +64,9 @@ def _test_settings(settings):
         "staticfiles": {
             "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"
         },
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
     }
     settings.SETUP.MAIN_DOMAIN = "example.com"
     settings.MAIN_DOMAIN = "example.com"
