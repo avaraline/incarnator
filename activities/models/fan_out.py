@@ -18,10 +18,59 @@ class FanOutStates(StateGraph):
     new.times_out_to(failed, seconds=86400 * 3)
 
     @classmethod
+    def _handle_group_actor_auto_boost(cls, identity: "Identity", post):
+        """
+        Handles automatic boosting for group actors
+        """
+        from activities.models import Post, PostInteraction, PostInteractionStates
+
+        # Don't boost your own posts, or non-public posts
+        if post.author_id == identity.id or post.visibility in [
+            Post.Visibilities.followers,
+            Post.Visibilities.mentioned,
+        ]:
+            return
+
+        # Don't boost if this group already boosted this post
+        if PostInteraction.objects.filter(
+            identity=identity,
+            post=post,
+            type=PostInteraction.Types.boost,
+            state__in=PostInteractionStates.group_active(),
+        ).exists():
+            return
+
+        # Create a new boost interaction
+        boost = PostInteraction.objects.create(
+            identity=identity,
+            post=post,
+            type=PostInteraction.Types.boost,
+        )
+        boost.transition_perform(PostInteractionStates.new)
+
+    @classmethod
+    def _handle_group_actor_remove_boost(cls, identity: "Identity", post):
+        """
+        Removes any boosts by a group actor for a given post.
+        """
+        from activities.models import PostInteraction, PostInteractionStates
+
+        boosts = PostInteraction.objects.filter(
+            identity=identity,
+            post=post,
+            type=PostInteraction.Types.boost,
+            state__in=PostInteractionStates.group_active(),
+        )
+        PostInteraction.transition_perform_queryset(
+            boosts, PostInteractionStates.undone
+        )
+
+    @classmethod
     def handle_new(cls, instance: "FanOut"):
         """
         Sends the fan-out to the right inbox.
         """
+        from activities.models import PostInteraction
 
         # Don't try to fan out to identities that are not fetched yet
         if not (instance.identity.local or instance.identity.inbox_uri):
@@ -71,6 +120,10 @@ class FanOutStates(StateGraph):
                         post=post,
                     )
 
+                # Handle group actor automatic boosting
+                if instance.identity.is_group:
+                    cls._handle_group_actor_auto_boost(instance.identity, post)
+
             # Handle sending remote posts create
             case (FanOut.Types.post, False):
                 post = instance.subject_post
@@ -112,6 +165,10 @@ class FanOutStates(StateGraph):
                         identity=instance.identity,
                         subject_post=post,
                     ).delete()
+                if instance.identity.is_group:
+                    cls._handle_group_actor_remove_boost(
+                        instance.identity, instance.subject_post
+                    )
 
             # Handle sending remote post deletes
             case (FanOut.Types.post_deleted, False):
@@ -160,6 +217,15 @@ class FanOutStates(StateGraph):
                     interaction=interaction,
                 )
 
+                # If this is a boost and the identity is a group, also boost the post
+                if (
+                    instance.identity.is_group
+                    and interaction.type == PostInteraction.Types.boost
+                ):
+                    cls._handle_group_actor_auto_boost(
+                        instance.identity, interaction.post
+                    )
+
             # Handle sending remote boosts/likes/votes/pins
             case (FanOut.Types.interaction, False):
                 interaction = instance.subject_post_interaction
@@ -191,6 +257,24 @@ class FanOutStates(StateGraph):
                     identity=instance.identity,
                     interaction=interaction,
                 )
+
+                # If this is a boost and the identity is a group
+                # and the post itself is not in the group's timeline
+                if (
+                    interaction.type == PostInteraction.Types.boost
+                    and instance.identity.is_group
+                    and not TimelineEvent.objects.filter(
+                        identity=instance.identity,
+                        subject_post=instance.subject_post,
+                        type__in=[
+                            TimelineEvent.Types.post,
+                            TimelineEvent.Types.mentioned,
+                        ],
+                    ).exists()
+                ):
+                    cls._handle_group_actor_remove_boost(
+                        instance.identity, interaction.post
+                    )
 
             # Handle sending remote undoing boosts/likes/pins
             case (FanOut.Types.undo_interaction, False):  # noqa:F841

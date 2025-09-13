@@ -57,6 +57,10 @@ class IdentityEdit(FormView):
 
     class form_class(forms.Form):
         notes = forms.CharField(widget=forms.Textarea, required=False)
+        actor_type = forms.ChoiceField(
+            choices=[(t, t) for t in Identity.ACTOR_TYPES],
+            required=False,
+        )
 
     def dispatch(self, request, id, *args, **kwargs):
         self.identity = get_object_or_404(Identity, id=id)
@@ -78,10 +82,15 @@ class IdentityEdit(FormView):
         return super().post(request, *args, **kwargs)
 
     def get_initial(self):
-        return {"notes": self.identity.admin_notes}
+        return {
+            "notes": self.identity.admin_notes,
+            "actor_type": self.identity.actor_type,
+        }
 
     def form_valid(self, form):
         self.identity.admin_notes = form.cleaned_data["notes"]
+        if self.identity.local and form.cleaned_data["actor_type"]:
+            self.identity.actor_type = form.cleaned_data["actor_type"]
         self.identity.save()
         return redirect(".")
 
@@ -89,4 +98,5 @@ class IdentityEdit(FormView):
         context = super().get_context_data(**kwargs)
         context["identity"] = self.identity
         context["page"] = self.request.GET.get("page")
+        context["actor_types"] = Identity.ACTOR_TYPES
         return context
