@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     #: The default database.
     DATABASE_SERVER: ImplicitHostname | None = None
 
+    #: Disable Federation, not for production use
+    NO_FEDERATION: bool = False
+
     #: The currently running environment, used for things such as sentry
     #: error reporting.
     ENVIRONMENT: Environments = "development"

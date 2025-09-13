@@ -32,6 +32,28 @@ class HttpResponseUnauthorized(HttpResponse):
     status_code = 401
 
 
+class FederatedView(View):
+    """
+    Base class for all views requires federation
+    """
+
+    def dispatch(self, request, *args, **kwargs):
+        if settings.SETUP.NO_FEDERATION:
+            return HttpResponse(status=503)
+        return super().dispatch(request, *args, **kwargs)
+
+
+class FederatedStaticView(StaticContentView):
+    """
+    Base class for all static views requires federation
+    """
+
+    def dispatch(self, request, *args, **kwargs):
+        if settings.SETUP.NO_FEDERATION:
+            return HttpResponse(status=503)
+        return super().dispatch(request, *args, **kwargs)
+
+
 class HostMeta(View):
     """
     Returns a canned host-meta response
@@ -104,7 +126,7 @@ class NodeInfo2(View):
 
 
 @method_decorator(cache_page(), name="dispatch")
-class Webfinger(View):
+class Webfinger(FederatedView):
     """
     Services webfinger requests
     """
@@ -127,7 +149,7 @@ class Webfinger(View):
 
 
 @method_decorator(csrf_exempt, name="dispatch")
-class Inbox(View):
+class Inbox(FederatedView):
     """
     AP Inbox endpoint
     """
@@ -265,7 +287,7 @@ class Inbox(View):
         return HttpResponse(status=202)
 
 
-class Outbox(View):
+class Outbox(FederatedView):
     """
     The ActivityPub outbox for an identity
     """
@@ -294,7 +316,7 @@ class Outbox(View):
         )
 
 
-class FeaturedCollection(View):
+class FeaturedCollection(FederatedView):
     """
     An ordered collection of all pinned posts of an identity
     """
@@ -322,7 +344,7 @@ class FeaturedCollection(View):
         )
 
 
-class FeaturedTags(View):
+class FeaturedTags(FederatedView):
     """
     An ordered collection of all pinned hashtags of an identity
     """
@@ -353,7 +375,7 @@ class FeaturedTags(View):
 
 
 @method_decorator(cache_control(max_age=60 * 15), name="dispatch")
-class EmptyOutbox(StaticContentView):
+class EmptyOutbox(FederatedStaticView):
     """
     A fixed-empty outbox for the system actor
     """
@@ -373,7 +395,7 @@ class EmptyOutbox(StaticContentView):
 
 
 @method_decorator(cache_control(max_age=60 * 15), name="dispatch")
-class SystemActorView(StaticContentView):
+class SystemActorView(FederatedStaticView):
     """
     Special endpoint for the overall system actor
     """

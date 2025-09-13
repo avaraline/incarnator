@@ -1,10 +1,11 @@
 import string
 
 from django import forms
+from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.contrib.syndication.views import Feed
 from django.core import validators
-from django.http import Http404, JsonResponse
+from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import redirect
 from django.utils.decorators import method_decorator
 from django.utils.feedgenerator import Rss201rev2Feed
@@ -61,6 +62,8 @@ class ViewIdentity(ListView):
             return super().get(request, identity=self.identity)
 
     def serve_actor(self, identity):
+        if settings.SETUP.NO_FEDERATION:
+            return HttpResponse(status=503)
         # If this not a local actor, redirect to their canonical URI
         if not identity.local:
             return redirect(identity.actor_uri)
