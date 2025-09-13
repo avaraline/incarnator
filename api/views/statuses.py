@@ -113,6 +113,7 @@ def post_status(request, details: PostStatusSchema) -> schemas.Status:
         attachments=attachments,
         question=details.poll.dict() if details.poll else None,
         language=details.language,
+        application=request.token.application if request.token else None,
     )
     # Add their own timeline event for immediate visibility
     TimelineEvent.add_post(request.identity, post)
