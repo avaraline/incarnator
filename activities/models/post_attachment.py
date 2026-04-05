@@ -81,6 +81,18 @@ class PostAttachment(StatorModel):
             "video/webm",
         ]
 
+    def is_audio(self):
+        return self.mimetype in [
+            "audio/aac",
+            "audio/flac",
+            "audio/mp4",
+            "audio/mpeg",
+            "audio/ogg",
+            "audio/opus",
+            "audio/wav",
+            "audio/webm",
+        ]
+
     def thumbnail_url(self) -> RelativeAbsoluteUrl:
         if self.thumbnail:
             return RelativeAbsoluteUrl(self.thumbnail.url)
@@ -135,26 +147,43 @@ class PostAttachment(StatorModel):
             type_ = "image"
         elif self.is_video():
             type_ = "video"
-        value = {
-            "id": str(self.pk),
-            "type": type_,
-            "url": self.full_url().absolute,
-            "preview_url": self.thumbnail_url().absolute,
-            "remote_url": None,
-            "meta": {
+        elif self.is_audio():
+            type_ = "audio"
+        if type_ == "image":
+            meta = {
                 "focus": {
                     "x": self.focal_x or 0,
                     "y": self.focal_y or 0,
                 },
-            },
+            }
+            if self.width and self.height:
+                meta["original"] = {
+                    "width": self.width,
+                    "height": self.height,
+                    "size": f"{self.width}x{self.height}",
+                    "aspect": self.width / self.height,
+                }
+            preview_url = self.thumbnail_url().absolute
+        elif type_ in ("audio", "video"):
+            meta = {
+                "original": {},
+            }
+            if self.width and self.height:
+                meta["original"]["width"] = self.width
+                meta["original"]["height"] = self.height
+                meta["original"]["size"] = f"{self.width}x{self.height}"
+                meta["original"]["aspect"] = self.width / self.height
+            preview_url = None
+        else:
+            meta = {}
+            preview_url = None
+        return {
+            "id": str(self.pk),
+            "type": type_,
+            "url": self.full_url().absolute,
+            "preview_url": preview_url,
+            "remote_url": None,
+            "meta": meta,
             "description": self.name,
             "blurhash": self.blurhash,
         }
-        if self.width and self.height:
-            value["meta"]["original"] = {
-                "width": self.width,
-                "height": self.height,
-                "size": f"{self.width}x{self.height}",
-                "aspect": self.width / self.height,
-            }
-        return value

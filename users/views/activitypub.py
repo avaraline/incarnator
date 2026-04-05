@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 from urllib.parse import urldefrag, urlparse
@@ -30,6 +31,28 @@ logger = logging.getLogger(__name__)
 
 class HttpResponseUnauthorized(HttpResponse):
     status_code = 401
+
+
+class FederatedView(View):
+    """
+    Base class for all views requires federation
+    """
+
+    def dispatch(self, request, *args, **kwargs):
+        if settings.SETUP.NO_FEDERATION:
+            return HttpResponse(status=503)
+        return super().dispatch(request, *args, **kwargs)
+
+
+class FederatedStaticView(StaticContentView):
+    """
+    Base class for all static views requires federation
+    """
+
+    def dispatch(self, request, *args, **kwargs):
+        if settings.SETUP.NO_FEDERATION:
+            return HttpResponse(status=503)
+        return super().dispatch(request, *args, **kwargs)
 
 
 class HostMeta(View):
@@ -82,11 +105,16 @@ class NodeInfo2(View):
             local_posts = Post.objects.filter(
                 local=True, author__domain=request.domain
             ).count()
-            metadata = {"nodeName": request.config.site_name}
+            metadata = {
+                "nodeName": request.config.site_name,
+                "features": ["quote_posting", "editing", "polls"],
+            }
         else:
             local_identities = Identity.objects.filter(local=True).count()
             local_posts = Post.objects.filter(local=True).count()
-            metadata = {}
+            metadata = {"features": ["quote_posting", "editing", "polls"]}
+        if settings.SETUP.NO_FEDERATION:
+            metadata["federation"] = {"enabled": False}
         return JsonResponse(
             {
                 "version": "2.0",
@@ -104,7 +132,7 @@ class NodeInfo2(View):
 
 
 @method_decorator(cache_page(), name="dispatch")
-class Webfinger(View):
+class Webfinger(FederatedView):
     """
     Services webfinger requests
     """
@@ -127,7 +155,7 @@ class Webfinger(View):
 
 
 @method_decorator(csrf_exempt, name="dispatch")
-class Inbox(View):
+class Inbox(FederatedView):
     """
     AP Inbox endpoint
     """
@@ -136,8 +164,17 @@ class Inbox(View):
         # Reject bodies that are unfeasibly big
         if len(request.body) > settings.JSONLD_MAX_SIZE:
             return HttpResponseBadRequest("Payload size too large")
-        # Load the LD
-        document = canonicalise(json.loads(request.body), include_security=True)
+        # Load the LD. Keep the raw parsed JSON separately: LD signatures are
+        # computed over the original document structure, so verification must
+        # use raw_document rather than the canonicalised form.
+        try:
+            raw_document = json.loads(request.body)
+            document = canonicalise(raw_document, include_security=True, outbound=False)
+        except ValueError:
+            logger.warning(
+                "Inbox error when parsing JSON to LDDocument: %s", request.body.decode()
+            )
+            return HttpResponseBadRequest("Error parsing JSON")
         document_type = document["type"]
         document_subtype = None
         if isinstance(document.get("object"), dict):
@@ -185,87 +222,184 @@ class Inbox(View):
         ]:
             return HttpResponse(status=202)
 
-        # authenticate HTTP signature first, if one is present and the actor
-        # is already known to us. An invalid signature is an error and message
-        # should be discarded. NOTE: for previously unknown actors, we
-        # don't have their public key yet!
-        if "signature" in request:
+        http_sig_present = "Signature" in request.headers
+        ld_sig_present = "signature" in document
+        verified = False
+        relay_mode = False  # True when HTTP signer != document actor
+        relay_http_verified = False  # True when relay HTTP sig verified immediately
+        metadata = {}
+
+        # Authenticate HTTP signature if present. Parse keyId first to detect
+        # relay deliveries (where the HTTP signer differs from document["actor"]).
+        # An invalid signature is a hard rejection. For unknown signers without a
+        # cached key, pre-compute data for deferred verification.
+        if http_sig_present:
             try:
-                if identity.public_key:
-                    HttpSignature.verify_request(
-                        request,
-                        identity.public_key,
-                    )
-                    logger.debug(
-                        "Inbox: %s from %s has good HTTP signature",
-                        document_type,
-                        identity,
-                    )
+                signature_details = HttpSignature.parse_signature(
+                    request.headers["signature"]
+                )
+            except VerificationFormatError as e:
+                logger.warning("Inbox error: Bad HTTP signature format: %s", e.args[0])
+                return HttpResponseBadRequest(e.args[0])
+
+            key_id_actor = urldefrag(signature_details["keyid"]).url
+            relay_mode = key_id_actor != document["actor"]
+            signer_identity = (
+                Identity.by_actor_uri(key_id_actor, create=True, transient=True)
+                if relay_mode
+                else identity
+            )
+
+            try:
+                if signer_identity.public_key:
+                    HttpSignature.verify_request(request, signer_identity.public_key)
+                    if relay_mode:
+                        relay_http_verified = True
+                        logger.debug(
+                            "Inbox: relay HTTP sig from %s ok for %s",
+                            signer_identity,
+                            identity,
+                        )
+                    else:
+                        verified = True
+                        logger.debug(
+                            "Inbox: %s from %s has good HTTP signature",
+                            document_type,
+                            identity,
+                        )
                 else:
-                    logger.info(
-                        "Inbox: New actor, no key available: %s",
-                        document["actor"],
+                    logger.info("Inbox: No key available for %s", key_id_actor)
+                    # Pre-compute signed cleartext for deferred verification.
+                    if "digest" in request.headers:
+                        expected_digest = HttpSignature.calculate_digest(request.body)
+                        if request.headers["digest"] != expected_digest:
+                            return HttpResponseBadRequest("Digest is incorrect")
+                    headers_string = HttpSignature.headers_from_request(
+                        request, signature_details["headers"], signature_details
                     )
+                    sig_b64 = base64.b64encode(signature_details["signature"]).decode()
+                    if relay_mode:
+                        metadata["relay_http_sig"] = {
+                            "relay_uri": key_id_actor,
+                            "signature": sig_b64,
+                            "headers_string": headers_string,
+                        }
+                    else:
+                        metadata["http_sig"] = {
+                            "actor_uri": document["actor"],
+                            "signature": sig_b64,
+                            "headers_string": headers_string,
+                        }
             except VerificationFormatError as e:
                 logger.warning("Inbox error: Bad HTTP signature format: %s", e.args[0])
                 return HttpResponseBadRequest(e.args[0])
             except VerificationError:
-                logger.warning("Inbox error: Bad HTTP signature from %s", identity)
+                logger.warning(
+                    "Inbox error: Bad HTTP signature from %s", signer_identity
+                )
+                # TODO: stale-key retry missing. This method only fetches when the key
+                # is absent. If the key IS present but stale (remote actor rotated keys
+                # after we cached them), deferred verification will fail permanently.
                 return HttpResponseUnauthorized("Bad signature")
 
-        # Mastodon advices not implementing LD Signatures, but
-        # they're widely deployed today. Validate it if one exists.
+            # Relay deliveries must carry an LD signature from the document actor
+            # so the true author can be authenticated independently of the relay.
+            if relay_mode and not ld_sig_present:
+                logger.warning(
+                    "Inbox error: Relay from %s missing LD signature", signer_identity
+                )
+                return HttpResponseUnauthorized("Relay requires LD signature")
+
+        # Validate LD Signature when HTTP sig did not already verify the message
+        # (direct delivery), or always for relay where LD sig authenticates the
+        # document actor independently of the relay.
+        # Note: direct delivery with valid HTTP sig skips this block entirely —
+        # matching Mastodon's behaviour and avoiding pyld/ruby-jsonld URDNA2015
+        # interop failures.
         # https://docs.joinmastodon.org/spec/security/#ld
-        if "signature" in document:
+        if ld_sig_present and not verified:
             try:
-                # signatures are identified by the signature block
                 creator = urldefrag(document["signature"]["creator"]).url
+            except (KeyError, TypeError):
+                logger.warning("Inbox error: Malformed LD signature block")
+                return HttpResponseBadRequest("Malformed LD signature")
+            if creator != document["actor"]:
+                logger.warning(
+                    "Inbox error: LD signature creator %s does not match actor %s",
+                    creator,
+                    document["actor"],
+                )
+                return HttpResponseUnauthorized(
+                    "Signature creator does not match actor"
+                )
+            try:
                 creator_identity = Identity.by_actor_uri(
                     creator, create=True, transient=True
                 )
-                if not creator_identity.public_key:
-                    logger.info("Inbox: New actor, no key available: %s", creator)
-                    # if we can't verify it, we don't keep it
-                    document.pop("signature")
-                else:
-                    LDSignature.verify_signature(document, creator_identity.public_key)
+                if creator_identity.public_key:
+                    # Verify against raw_document (original structure as signed),
+                    # not the canonicalized form which may differ in N-Quads output.
+                    LDSignature.verify_signature(
+                        raw_document, creator_identity.public_key
+                    )
+                    # For relay: only mark fully verified when relay HTTP was also
+                    # confirmed immediately (not deferred).
+                    if not relay_mode or relay_http_verified:
+                        verified = True
                     logger.debug(
                         "Inbox: %s from %s has good LD signature",
                         document["type"],
                         creator_identity,
                     )
+                else:
+                    logger.info("Inbox: New actor, no key available: %s", creator)
+                    # Store raw_document so deferred verification can also use the
+                    # original structure rather than the canonicalized message.
+                    metadata["ld_sig"] = {
+                        "creator_uri": creator,
+                        "raw_document": raw_document,
+                    }
             except VerificationFormatError as e:
                 logger.warning("Inbox error: Bad LD signature format: %s", e.args[0])
                 return HttpResponseBadRequest(e.args[0])
             except VerificationError:
-                # An invalid LD Signature might also indicate nothing but
-                # a syntactical difference between implementations.
-                # Strip it out if we can't verify it.
-                if "signature" in document:
-                    document.pop("signature")
-                logger.info(
-                    "Inbox: Stripping invalid LD signature from %s %s",
+                logger.warning(
+                    "Inbox error: Bad LD signature from %s %s",
                     creator_identity,
-                    document["id"],
+                    document.get("id"),
                 )
+                return HttpResponseUnauthorized("Bad signature")
 
-        if not ("signature" in request or "signature" in document):
-            logger.debug(
-                "Inbox: %s from %s is unauthenticated. That's OK.",
+        if not (http_sig_present or ld_sig_present):
+            logger.warning(
+                "Inbox: %s from %s has no signature, rejecting.",
                 document["type"],
                 identity,
             )
+            return HttpResponseUnauthorized("No signature")
 
         # Don't allow injection of internal messages
         if document["type"].startswith("__"):
             return HttpResponseUnauthorized("Bad type")
 
-        # Hand off the item to be processed by the queue
-        InboxMessage.objects.create(message=document)
+        if verified:
+            InboxMessage.objects.create(message=document)
+        else:
+            # Signatures present but keys unavailable; defer until
+            # the actor's key can be fetched and the signature verified.
+            logger.info(
+                "Inbox: Deferring %s from %s pending key fetch",
+                document["type"],
+                identity,
+            )
+            InboxMessage.objects.create(
+                message=document,
+                metadata=metadata,
+            )
         return HttpResponse(status=202)
 
 
-class Outbox(View):
+class Outbox(FederatedView):
     """
     The ActivityPub outbox for an identity
     """
@@ -294,7 +428,7 @@ class Outbox(View):
         )
 
 
-class FeaturedCollection(View):
+class FeaturedCollection(FederatedView):
     """
     An ordered collection of all pinned posts of an identity
     """
@@ -322,7 +456,7 @@ class FeaturedCollection(View):
         )
 
 
-class FeaturedTags(View):
+class FeaturedTags(FederatedView):
     """
     An ordered collection of all pinned hashtags of an identity
     """
@@ -353,7 +487,7 @@ class FeaturedTags(View):
 
 
 @method_decorator(cache_control(max_age=60 * 15), name="dispatch")
-class EmptyOutbox(StaticContentView):
+class EmptyOutbox(FederatedStaticView):
     """
     A fixed-empty outbox for the system actor
     """
@@ -373,7 +507,7 @@ class EmptyOutbox(StaticContentView):
 
 
 @method_decorator(cache_control(max_age=60 * 15), name="dispatch")
-class SystemActorView(StaticContentView):
+class SystemActorView(FederatedStaticView):
     """
     Special endpoint for the overall system actor
     """

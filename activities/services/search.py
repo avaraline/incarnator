@@ -16,52 +16,59 @@ class SearchService:
         self.query = query.strip()
         self.identity = identity
 
-    def search_identities_handle(self) -> set[Identity]:
+    def search_identities_handle(self) -> list[Identity]:
         """
         Searches for identities by their handles
         """
 
         # Short circuit if it's obviously not for us
         if "://" in self.query:
-            return set()
+            return []
 
         # Try to fetch the user by handle
-        handle = self.query.lstrip("@")
+        handle = self.query.strip("@")
+        if not handle:
+            return []
+
         results: set[Identity] = set()
+        prio_result: Identity | None = None
+
         if "@" in handle:
             username, domain = handle.split("@", 1)
 
             # Resolve the domain to the display domain
             domain_instance = Domain.get_domain(domain)
-            try:
-                if domain_instance is None:
-                    raise Identity.DoesNotExist()
-                identity = Identity.objects.get(
+            if domain_instance is not None:
+                prio_result = Identity.objects.filter(
+                    domain=domain_instance, username=username
+                ).first()
+                for identity in Identity.objects.filter(
                     domain=domain_instance,
                     username__iexact=username,
+                ):
+                    results.add(identity)
+            if not results and self.identity is not None:
+                # Allow authenticated users to fetch remote
+                prio_result = Identity.by_username_and_domain(
+                    username, domain_instance or domain, fetch=True
                 )
-            except Identity.DoesNotExist:
-                identity = None
-                if self.identity is not None:
-                    try:
-                        # Allow authenticated users to fetch remote
-                        identity = Identity.by_username_and_domain(
-                            username, domain_instance or domain, fetch=True
-                        )
-                        if identity and identity.state == IdentityStates.outdated:
-                            identity.fetch_actor()
-                    except ValueError:
-                        pass
-
-            if identity:
-                results.add(identity)
+                if prio_result:
+                    if prio_result.state == IdentityStates.outdated:
+                        prio_result.fetch_actor()
 
         else:
+            prio_result = Identity.objects.filter(local=True, username=handle).first()
             for identity in Identity.objects.filter(username=handle)[:20]:
                 results.add(identity)
             for identity in Identity.objects.filter(username__istartswith=handle)[:20]:
                 results.add(identity)
-        return results
+            if "." in handle:
+                for identity in Identity.objects.filter(domain__iexact=handle)[:20]:
+                    results.add(identity)
+
+        if prio_result:
+            return [prio_result] + list(results - {prio_result})
+        return list(results)
 
     def search_url(self) -> Post | Identity | None:
         """
@@ -85,7 +92,7 @@ class SearchService:
 
         try:
             json_data = json_from_response(response)
-            document = canonicalise(json_data, include_security=True)
+            document = canonicalise(json_data, include_security=True, outbound=False)
         except ValueError:
             return None
         type = document.get("type", "unknown").lower()
@@ -145,11 +152,11 @@ class SearchService:
         results = {
             "identities": self.search_identities_handle(),
             "hashtags": self.search_hashtags(),
-            "posts": set(),
+            "posts": [],
         }
         url_result = self.search_url()
         if isinstance(url_result, Identity):
-            results["identities"].add(url_result)
+            results["identities"].insert(0, url_result)
         if isinstance(url_result, Post):
-            results["posts"].add(url_result)
+            results["posts"] = [url_result]
         return results

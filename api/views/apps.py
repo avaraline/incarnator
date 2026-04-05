@@ -9,10 +9,12 @@ from api.models import Application
 def add_app(
     request,
     client_name: QueryOrBody[str],
-    redirect_uris: QueryOrBody[str],
+    redirect_uris: QueryOrBody[str | list[str]],
     scopes: QueryOrBody[None | str] = None,
     website: QueryOrBody[None | str] = None,
 ) -> schemas.Application:
+    if isinstance(redirect_uris, list):
+        redirect_uris = ",".join(redirect_uris)
     application = Application.create(
         client_name=client_name,
         website=website,

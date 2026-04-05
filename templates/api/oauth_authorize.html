@@ -37,9 +37,11 @@
                 <input type="hidden" name="scope" value="{{ scope }}">
             </fieldset>
             <div class="buttons">
+                <a href="#" onclick="document.getElementById('logout').submit()" class="secondary button left">Logout</a>
                 <a href="#" class="secondary button left">Deny</a>
                 <button>Allow</button>
             </div>
         </form>
+        <form id="logout" method="post" action="/account/logout?next={{ request.get_full_path | urlencode }}">{% csrf_token %}</form>
     {% endif %}
 {% endblock %}

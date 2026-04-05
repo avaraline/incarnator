@@ -21,6 +21,9 @@
                 </td>
                 <td class="stat">
                     Created {{ token.created|timedeltashort }} ago
+                    {% if token.revoked %}
+                        <br>Revoked {{ token.revoked|timedeltashort }} ago
+                    {% endif %}
                 </td>
             </tr>
         {% empty %}

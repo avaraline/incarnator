@@ -152,3 +152,106 @@ def test_parser_same_name_mentions(remote_identity, remote_identity2):
         == '<span class="h-card"><a href="https://remote.test/@test/" class="u-url mention" rel="nofollow noopener noreferrer" target="_blank">@<span>test</span></a></span> <span class="h-card"><a href="https://remote2.test/@test/" class="u-url mention" rel="nofollow noopener noreferrer" target="_blank">@<span>test</span></a></span>'
     )
     assert parser.plain_text == "@test @test"
+
+
+@pytest.mark.django_db
+def test_parser_emoji_img():
+    """
+    Validates that <img> tags with :shortcode: alt text are handled as emoji
+    """
+
+    # Emoji img with find_emojis=False: shortcode text preserved
+    parser = FediverseHtmlParser(
+        '<p>Hello <img src="https://remote.test/emoji/blobcat.png" alt=":blobcat:" class="custom-emoji"> world</p>',
+        find_emojis=False,
+    )
+    assert parser.html == "<p>Hello :blobcat: world</p>"
+    assert parser.plain_text == "Hello :blobcat: world"
+
+    # Emoji img with find_emojis=True but no DB emoji: falls back to text
+    parser = FediverseHtmlParser(
+        '<p>Hello <img src="https://remote.test/emoji/blobcat.png" alt=":blobcat:" class="custom-emoji"> world</p>',
+        find_emojis=True,
+    )
+    assert parser.html == "<p>Hello :blobcat: world</p>"
+    assert parser.plain_text == "Hello :blobcat: world"
+
+    # Non-emoji img (alt doesn't match :shortcode:): tag silently dropped
+    parser = FediverseHtmlParser(
+        '<p>Hello <img src="https://remote.test/photo.jpg" alt="A photo"> world</p>',
+    )
+    assert parser.html == "<p>Hello  world</p>"
+    assert parser.plain_text == "Hello  world"
+
+    # Img with no alt attribute: tag silently dropped
+    parser = FediverseHtmlParser(
+        '<p>Hello <img src="https://remote.test/photo.jpg"> world</p>',
+    )
+    assert parser.html == "<p>Hello  world</p>"
+    assert parser.plain_text == "Hello  world"
+
+    # Multiple emoji img tags
+    parser = FediverseHtmlParser(
+        '<p><img src="https://remote.test/emoji/a.png" alt=":wave:"> hi <img src="https://remote.test/emoji/b.png" alt=":smile:"></p>',
+        find_emojis=False,
+    )
+    assert parser.html == "<p>:wave: hi :smile:</p>"
+    assert parser.plain_text == ":wave: hi :smile:"
+
+    # Self-closing img tag
+    parser = FediverseHtmlParser(
+        '<p>Test <img src="https://remote.test/emoji/a.png" alt=":cat:" /> end</p>',
+        find_emojis=False,
+    )
+    assert parser.html == "<p>Test :cat: end</p>"
+    assert parser.plain_text == "Test :cat: end"
+
+
+@pytest.mark.django_db
+def test_parser_link_scheme_validation():
+    """
+    Validates that links with disallowed schemes are stripped
+    """
+
+    # javascript: scheme is stripped, content preserved as text
+    parser = FediverseHtmlParser(
+        '<a href="javascript:alert(1)">click me</a>',
+    )
+    assert parser.html == "click me"
+    assert "javascript" not in parser.html
+
+    # data: scheme is stripped
+    parser = FediverseHtmlParser(
+        '<a href="data:text/html,&lt;script&gt;">payload</a>',
+    )
+    assert "href" not in parser.html
+
+    # vbscript: scheme is stripped
+    parser = FediverseHtmlParser(
+        '<a href="vbscript:MsgBox(1)">click</a>',
+    )
+    assert parser.html == "click"
+    assert "href" not in parser.html
+
+    # http: and https: are allowed
+    parser = FediverseHtmlParser(
+        '<a href="https://example.com">safe link</a>',
+    )
+    assert 'href="https://example.com"' in parser.html
+
+    parser = FediverseHtmlParser(
+        '<a href="http://example.com">http link</a>',
+    )
+    assert 'href="http://example.com"' in parser.html
+
+    # mailto: is allowed
+    parser = FediverseHtmlParser(
+        '<a href="mailto:user@example.com">email</a>',
+    )
+    assert 'href="mailto:user@example.com"' in parser.html
+
+    # Relative URLs (no scheme) are allowed
+    parser = FediverseHtmlParser(
+        '<a href="/local/path">local</a>',
+    )
+    assert 'href="/local/path"' in parser.html

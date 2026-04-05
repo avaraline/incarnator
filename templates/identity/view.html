@@ -48,6 +48,7 @@
         </div>
 
         <h1>{{ identity.html_name_or_handle }}</h1>
+        {% if identity.actor_type != 'person' %}<small>{{ identity.actor_type }}</small>{% endif %}
         <small>
             @{{ identity.handle }}
             <a title="Copy handle"

@@ -1,6 +1,8 @@
+import re
 from datetime import timedelta
 from typing import Literal
 
+from django.db.models import Q
 from django.http import HttpRequest
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -14,6 +16,7 @@ from activities.models import (
     TimelineEvent,
 )
 from activities.services import PostService
+from users.models import Identity
 from api import schemas
 from api.decorators import scope_required
 from api.pagination import MastodonPaginator, PaginatingApiResponse, PaginationResult
@@ -43,6 +46,8 @@ class PostStatusSchema(Schema):
 
     status: str | None = None
     in_reply_to_id: str | None = None
+    quoted_status_id: str | None = None
+    quote_id: str | None = None
     sensitive: bool = False
     spoiler_text: str | None = None
     visibility: Literal["public", "unlisted", "private", "direct"] = "public"
@@ -73,11 +78,61 @@ def post_for_id(request: HttpRequest, id: str) -> Post:
     """
     if request.identity:
         queryset = Post.objects.not_hidden().visible_to(
-            request.identity, include_replies=True
+            request.identity, include_replies=True, include_muted=True
         )
     else:
         queryset = Post.objects.not_hidden().unlisted()
     return get_object_or_404(queryset, pk=id)
+
+
+def _clamp_quote_visibility(requested: int, quoted: int) -> int:
+    """
+    Ensure the quoting post's visibility does not exceed the quoted post's.
+    Ordering: public(0) > unlisted(1) > local_only(4) > followers(2) > mentioned(3).
+    Exception: local_only can only be quoted as local_only or mentioned.
+    """
+    V = Post.Visibilities
+    # Map visibility to a numeric "openness" rank (higher = more public)
+    rank = {V.public: 4, V.unlisted: 3, V.local_only: 2, V.followers: 1, V.mentioned: 0}
+    # Ordered from most public to least
+    ordered = [V.public, V.unlisted, V.local_only, V.followers, V.mentioned]
+    max_rank = rank.get(quoted, 0)
+    # Special case: local_only can only be quoted as local_only or mentioned
+    if quoted == V.local_only and requested not in (V.local_only, V.mentioned):
+        return V.local_only
+    if rank.get(requested, 0) <= max_rank:
+        return requested
+    # Clamp down to the most public allowed visibility
+    for v in ordered:
+        if rank[v] <= max_rank:
+            if quoted == V.local_only and v not in (V.local_only, V.mentioned):
+                continue
+            return v
+    return V.mentioned
+
+
+def _extract_quote_from_trailing_url(
+    text: str, identity: "Identity | None" = None
+) -> tuple["Post | None", str]:
+    """
+    Detect a trailing URL in the status text that matches a known post
+    visible to the given identity.
+    Returns (quote_post, cleaned_text) if found, or (None, original_text).
+    """
+    match = re.search(r"(^|\n)(https?://\S+)\s*$", text)
+    if not match:
+        return None, text
+    url = match.group(2)
+    post = (
+        Post.objects.not_hidden()
+        .visible_to(identity, include_replies=True)
+        .filter(Q(object_uri=url) | Q(url=url))
+        .first()
+    )
+    if not post:
+        return None, text
+    cleaned = text[: match.start(2)].rstrip("\n ")
+    return post, cleaned
 
 
 @scope_required("write:statuses")
@@ -103,13 +158,33 @@ def post_status(request, details: PostStatusSchema) -> schemas.Status:
             reply_post = Post.objects.get(pk=details.in_reply_to_id)
         except Post.DoesNotExist:
             pass
+    quote_post = None
+    quote_id = details.quoted_status_id or details.quote_id
+    if quote_id:
+        quote_post = (
+            Post.objects.not_hidden()
+            .visible_to(request.identity, include_replies=True)
+            .filter(pk=quote_id)
+            .first()
+        )
+    # If no explicit quote ID, detect a trailing URL that matches a known post
+    status_text = details.status or ""
+    if not quote_post and status_text:
+        quote_post, status_text = _extract_quote_from_trailing_url(
+            status_text, request.identity
+        )
+    # Enforce: quoting post visibility must not exceed quoted post visibility
+    visibility = visibility_map[details.visibility]
+    if quote_post:
+        visibility = _clamp_quote_visibility(visibility, quote_post.visibility)
     post = Post.create_local(
         author=request.identity,
-        content=details.status or "",
+        content=status_text,
         summary=details.spoiler_text,
         sensitive=details.sensitive,
-        visibility=visibility_map[details.visibility],
+        visibility=visibility,
         reply_to=reply_post,
+        quote=quote_post,
         attachments=attachments,
         question=details.poll.dict() if details.poll else None,
         language=details.language,
@@ -347,6 +422,28 @@ def unbookmark_status(request, id: str) -> schemas.Status:
     )
 
 
+@scope_required("write:mutes")
+@api_view.post
+def mute_status(request, id: str) -> schemas.Status:
+    post = post_for_id(request, id)
+    interactions = PostInteraction.get_post_interactions([post], request.identity)
+    status = schemas.Status.from_post(
+        post, interactions=interactions, identity=request.identity
+    )
+    status.muted = True
+    return status
+
+
+@scope_required("write:mutes")
+@api_view.post
+def unmute_status(request, id: str) -> schemas.Status:
+    post = post_for_id(request, id)
+    interactions = PostInteraction.get_post_interactions([post], request.identity)
+    return schemas.Status.from_post(
+        post, interactions=interactions, identity=request.identity
+    )
+
+
 @scope_required("write:accounts")
 @api_view.post
 def pin_status(request, id: str) -> schemas.Status:
@@ -370,3 +467,50 @@ def unpin_status(request, id: str) -> schemas.Status:
     return schemas.Status.from_post(
         post, identity=request.identity, interactions=interactions
     )
+
+
+@api_view.get
+def status_quotes(
+    request: HttpRequest,
+    id: str,
+    max_id: str | None = None,
+    since_id: str | None = None,
+    min_id: str | None = None,
+    limit: int = 20,
+) -> ApiResponse[list[schemas.Status]]:
+    """
+    View statuses that quote the given status.
+    """
+    post = post_for_id(request, id)
+    paginator = MastodonPaginator()
+    pager: PaginationResult[Post] = paginator.paginate(
+        Post.objects.not_hidden()
+        .visible_to(request.identity, include_replies=True)
+        .filter(quote_url=post.object_uri)
+        .select_related("author"),
+        min_id=min_id,
+        max_id=max_id,
+        since_id=since_id,
+        limit=limit,
+    )
+    interactions = PostInteraction.get_post_interactions(
+        pager.results, request.identity
+    )
+    return PaginatingApiResponse(
+        [
+            schemas.Status.from_post(
+                quote_post,
+                interactions=interactions,
+                identity=request.identity,
+            )
+            for quote_post in pager.results
+        ],
+        request=request,
+        include_params=["limit", "id"],
+    )
+
+
+@scope_required("read:statuses")
+@api_view.get
+def scheduled_statuses(request) -> list:
+    return []

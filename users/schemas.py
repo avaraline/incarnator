@@ -21,9 +21,9 @@ class NodeInfoUsage(BaseModel):
 class NodeInfo(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    version: Literal["2.0"]
+    version: Literal["2.0", "2.1", "2.2"]
     software: NodeInfoSoftware
     protocols: list[str] | None = None
     open_registrations: bool = Field(alias="openRegistrations")
     usage: NodeInfoUsage
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, Any] | list | None = None

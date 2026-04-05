@@ -1,8 +1,11 @@
 import html
 import re
 from html.parser import HTMLParser
+from urllib.parse import urlparse
 
 from django.utils.safestring import mark_safe
+
+_ALLOWED_SCHEMES = {"http", "https", "mailto"}
 
 
 class FediverseHtmlParser(HTMLParser):
@@ -35,12 +38,14 @@ class FediverseHtmlParser(HTMLParser):
     ]
 
     MENTION_REGEX = re.compile(
-        r"(^|[^\w\d\-_/])@([\w\d\-_]+(?:@[\w\d\-_\.]+[\w\d\-_]+)?)"
+        r"(^|[^\w\d\-_/])@([\w\d\-_.]+(?:@[\w\d\-_\.]+[\w\d\-_]+)?)"
     )
 
     HASHTAG_REGEX = re.compile(r"\B#([\w()]+\b)(?!;)")
 
     EMOJI_REGEX = re.compile(r"\B:([a-zA-Z0-9(_)-]+):\B")
+
+    IMG_EMOJI_REGEX = re.compile(r"^:([a-zA-Z0-9(_)-]+):$")
 
     URL_REGEX = re.compile(
         r"""(\(*  # Match any opening parentheses.
@@ -114,6 +119,20 @@ class FediverseHtmlParser(HTMLParser):
         elif tag == "a":
             self.flush_data()
             self._pending_a = {"attrs": dict(attrs), "content": ""}
+        elif tag == "img":
+            alt = dict(attrs).get("alt") or ""
+            m = self.IMG_EMOJI_REGEX.match(alt.strip())
+            if m:
+                shortcode = m.group(1)
+                if self._pending_a:
+                    self._pending_a["content"] += f":{shortcode}:"
+                else:
+                    self.flush_data()
+                    if self.find_emojis:
+                        self.html_output += self.create_emoji(shortcode)
+                    else:
+                        self.html_output += html.escape(f":{shortcode}:")
+                    self.text_output += f":{shortcode}:"
         self._fresh_p = tag in self.REWRITE_TO_P
 
     def handle_endtag(self, tag: str) -> None:
@@ -124,7 +143,7 @@ class FediverseHtmlParser(HTMLParser):
             self.text_output += "\n\n"
         elif tag == "a":
             if self._pending_a:
-                href = self._pending_a["attrs"].get("href")
+                href = self._pending_a["attrs"].get("href", "#")
                 content = self._pending_a["content"].strip()
                 has_ellipsis = "ellipsis" in self._pending_a["attrs"].get("class", "")
                 # Is it a mention?
@@ -167,6 +186,9 @@ class FediverseHtmlParser(HTMLParser):
 
         All return values from this function should be HTML-safe.
         """
+        scheme = urlparse(href).scheme.lower()
+        if scheme and scheme not in _ALLOWED_SCHEMES:
+            return html.escape(content)
         looks_like_link = bool(self.URL_REGEX.match(content))
         if looks_like_link:
             protocol, content = content.split("://", 1)
@@ -340,11 +362,7 @@ class ContentRenderer:
         parser = FediverseHtmlParser(
             html,
             mentions=post.mentions.all(),
-            uri_domain=(
-                None
-                if self.local or not post.author.domain
-                else post.author.domain.uri_domain
-            ),
+            uri_domain=(None if self.local else post.author.uri_domain),
             find_hashtags=True,
             find_emojis=self.local,
             emoji_domain=post.author.domain,
@@ -359,11 +377,7 @@ class ContentRenderer:
             return ""
         parser = FediverseHtmlParser(
             html,
-            uri_domain=(
-                None
-                if self.local or not identity.domain
-                else identity.domain.uri_domain
-            ),
+            uri_domain=(None if self.local else identity.uri_domain),
             find_hashtags=True,
             find_emojis=self.local,
             emoji_domain=identity.domain,
@@ -378,7 +392,7 @@ class ContentRenderer:
             return ""
         parser = FediverseHtmlParser(
             html,
-            uri_domain=(None if self.local else identity.domain.uri_domain),
+            uri_domain=(None if self.local else identity.uri_domain),
             find_hashtags=False,
             find_emojis=self.local,
             emoji_domain=identity.domain,

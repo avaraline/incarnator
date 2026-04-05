@@ -1,12 +1,12 @@
 from urllib.parse import urlparse
 
 import httpx
+from activities.models import Emoji, PostAttachment
 from django.conf import settings
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.views.generic import View
 
-from activities.models import Emoji, PostAttachment
 from users.models import Identity
 
 
@@ -111,3 +111,17 @@ class PostAttachmentCacheView(BaseProxyView):
         if not self.post_attachment.is_image():
             raise Http404()
         return self.post_attachment.remote_url
+
+
+class PreviewCardImageCacheView(BaseProxyView):
+    """
+    Proxies preview card images (og:image remote URLs).
+    """
+
+    def get_remote_url(self):
+        from activities.models import PreviewCard
+
+        card = get_object_or_404(PreviewCard, pk=self.kwargs["card_id"])
+        if not card.image_url:
+            raise Http404()
+        return card.image_url

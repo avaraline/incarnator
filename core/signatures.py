@@ -1,8 +1,9 @@
 import base64
+import binascii
 import json
 import logging
 from ssl import SSLCertVerificationError, SSLError
-from typing import Literal, TypedDict, cast
+from typing import Literal, NotRequired, TypedDict, cast
 from urllib.parse import urlparse
 
 import httpx
@@ -82,20 +83,48 @@ class HttpSignature:
             raise ValueError(f"Unknown digest algorithm {algorithm}")
 
     @classmethod
-    def headers_from_request(cls, request: HttpRequest, header_names: list[str]) -> str:
+    def headers_from_request(
+        cls,
+        request: HttpRequest,
+        header_names: list[str],
+        signature_params: "HttpSignatureDetails | None" = None,
+    ) -> str:
         """
-        Creates the to-be-signed header payload from a Django request
+        Creates the to-be-signed header payload from a Django request.
+
+        signature_params must be supplied when the signed headers list includes
+        hs2019 pseudo-headers (created) or (expires), whose values come from
+        the Signature header parameters rather than HTTP headers.
         """
         headers = {}
         for header_name in header_names:
             if header_name == "(request-target)":
                 value = f"{request.method.lower()} {request.path}"
+            elif header_name == "(created)":
+                if not signature_params or "created" not in signature_params:
+                    raise VerificationFormatError(
+                        "Signature uses (created) but created parameter is absent"
+                    )
+                value = signature_params["created"]
+            elif header_name == "(expires)":
+                if not signature_params or "expires" not in signature_params:
+                    raise VerificationFormatError(
+                        "Signature uses (expires) but expires parameter is absent"
+                    )
+                value = signature_params["expires"]
             elif header_name == "content-type":
                 value = request.headers["content-type"]
             elif header_name == "content-length":
                 value = request.headers["content-length"]
             else:
-                value = request.META["HTTP_%s" % header_name.upper().replace("-", "_")]
+                try:
+                    value = request.META[
+                        "HTTP_%s" % header_name.upper().replace("-", "_")
+                    ]
+                except KeyError:
+                    raise VerificationFormatError(
+                        f"Signed header not present in request: {header_name}"
+                    )
             headers[header_name] = value
         return "\n".join(f"{name.lower()}: {value}" for name, value in headers.items())
 
@@ -118,6 +147,13 @@ class HttpSignature:
             raise VerificationError(
                 f"Missing item from details (have: {key_names}, error: {e})"
             )
+        except binascii.Error:
+            raise VerificationFormatError("Invalid base64 in signature")
+        # Pull hs2019 timestamp parameters if present
+        if "created" in bits:
+            signature_details["created"] = bits["created"]
+        if "expires" in bits:
+            signature_details["expires"] = bits["expires"]
         return signature_details
 
     @classmethod
@@ -150,6 +186,23 @@ class HttpSignature:
         except InvalidSignature:
             raise VerificationError("Signature mismatch")
 
+    # 300 s matches Mastodon's clock-skew window (CLOCK_SKEW_MARGIN = 1 hour was
+    # too broad; 300 s is the practical default used by most implementations).
+    _DATE_SKEW_LIMIT = 300  # seconds
+
+    @classmethod
+    def _check_timestamp_skew(cls, timestamp: float, label: str) -> None:
+        """Raise VerificationFormatError if |now - timestamp| exceeds the limit."""
+        if not isinstance(timestamp, (int, float)) or not (timestamp == timestamp):
+            # reject NaN / non-numeric values that would silently bypass the check
+            raise VerificationFormatError(f"Invalid timestamp for {label}")
+        skew = timezone.now().timestamp() - timestamp
+        if abs(skew) > cls._DATE_SKEW_LIMIT:
+            logger.warning(
+                "Inbox: %s skew %.0fs (limit %ds)", label, skew, cls._DATE_SKEW_LIMIT
+            )
+            raise VerificationFormatError(f"{label} is too far away")
+
     @classmethod
     def verify_request(cls, request, public_key, skip_date=False):
         """
@@ -160,16 +213,20 @@ class HttpSignature:
             expected_digest = HttpSignature.calculate_digest(request.body)
             if request.headers["digest"] != expected_digest:
                 raise VerificationFormatError("Digest is incorrect")
-        # Verify date header
+        # Verify date header. parse_http_date raises OverflowError or ValueError on
+        # malformed input; surface those as VerificationFormatError (400) not 500.
         if "date" in request.headers and not skip_date:
-            header_date = parse_http_date(request.headers["date"])
-            if abs(timezone.now().timestamp() - header_date) > 60:
-                raise VerificationFormatError("Date is too far away")
+            try:
+                cls._check_timestamp_skew(
+                    parse_http_date(request.headers["date"]), "Date header"
+                )
+            except (OverflowError, ValueError) as exc:
+                raise VerificationFormatError(f"Invalid Date header: {exc}") from exc
         # Get the signature details
         if "signature" not in request.headers:
             raise VerificationFormatError("No signature header present")
         signature_details = cls.parse_signature(request.headers["signature"])
-        # Reject unknown algorithms
+        # Reject unknown algorithms.
         # hs2019 is used by some libraries to obfuscate the real algorithm per the spec
         # https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12
         if (
@@ -177,8 +234,21 @@ class HttpSignature:
             and signature_details["algorithm"] != "hs2019"
         ):
             raise VerificationFormatError("Unknown signature algorithm")
-        # Create the signature payload
-        headers_string = cls.headers_from_request(request, signature_details["headers"])
+        # Validate hs2019 (created) timestamp when used in place of Date header.
+        # Note: (expires) is intentionally not enforced here — neither Mastodon nor
+        # Pleroma enforce it, and doing so unilaterally would break interop with
+        # senders that set a past (expires) but are otherwise valid.
+        if "(created)" in signature_details["headers"] and not skip_date:
+            try:
+                cls._check_timestamp_skew(
+                    int(signature_details["created"]), "(created) parameter"
+                )
+            except (KeyError, ValueError, TypeError):
+                raise VerificationFormatError("Invalid (created) parameter")
+        # Build the signed string, passing params so (created)/(expires) can be resolved.
+        headers_string = cls.headers_from_request(
+            request, signature_details["headers"], signature_details
+        )
         cls.verify_signature(
             signature_details["signature"],
             headers_string,
@@ -196,6 +266,8 @@ class HttpSignature:
         method: Literal["get", "post"] = "post",
         timeout: TimeoutTypes = settings.SETUP.REMOTE_TIMEOUT,
     ):
+        if settings.SETUP.NO_FEDERATION:
+            return httpx.Response(200, json={})
         """
         Performs an async request to the given path, with a document, signed
         as an identity.
@@ -284,6 +356,8 @@ class HttpSignatureDetails(TypedDict):
     headers: list[str]
     signature: bytes
     keyid: str
+    created: NotRequired[str]  # hs2019 (created) parameter (Unix timestamp string)
+    expires: NotRequired[str]  # hs2019 (expires) parameter (Unix timestamp string)
 
 
 class LDSignature:
@@ -327,6 +401,8 @@ class LDSignature:
             )
         except InvalidSignature:
             raise VerificationError("LDSignature mismatch")
+        except binascii.Error:
+            raise VerificationFormatError("Invalid base64 in signatureValue")
 
     @classmethod
     def create_signature(

@@ -84,6 +84,8 @@ class MigrateOutPage(IdentityViewMixin, FormView):
             )
             if self.alias_identity is None:
                 raise forms.ValidationError("Cannot find that account.")
+            if self.alias_identity.local:
+                raise forms.ValidationError("Cannot migrate to a local account.")
             self.alias_identity.fetch_actor()
             return self.alias_identity.actor_uri
 

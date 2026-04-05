@@ -27,6 +27,7 @@ class PushType(models.TextChoices):
     favorite = "favourite", "Favorite"
     poll = "poll", "Poll"
     update = "update", "Update"
+    quote = "quote", "Quote"
     admin_signup = "admin.sign_up", "Account Signup"
     admin_report = "admin.report", "Report"
 
@@ -43,6 +44,7 @@ class PushType(models.TextChoices):
             "favourite": "{name} favorited your post",
             "poll": "{name} posted a new poll",
             "update": "Update",
+            "quote": "{name} quoted your post",
             "admin.sign_up": "{name} signed up for an account",
             "admin.report": "Report",
         }[self.value].format(**kwargs)

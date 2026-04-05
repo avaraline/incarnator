@@ -537,8 +537,41 @@ schemas = {
                     "invisible": "litepub:invisible",
                     "directMessage": "litepub:directMessage",
                     "listMessage": {"@id": "litepub:listMessage", "@type": "@id"},
+                    "quote": {
+                        "@id": "https://w3id.org/fep/044f#quote",
+                        "@type": "@id",
+                    },
                     "quoteUrl": "as:quoteUrl",
                     "quoteUri": "fedibird:quoteUri",
+                    "_misskey_quote": "misskey:_misskey_quote",
+                    "quoteAuthorization": {
+                        "@id": "https://w3id.org/fep/044f#quoteAuthorization",
+                        "@type": "@id",
+                    },
+                    "QuoteAuthorization": "https://w3id.org/fep/044f#QuoteAuthorization",
+                    "QuoteRequest": "https://w3id.org/fep/044f#QuoteRequest",
+                    "gts": "https://gotosocial.org/ns#",
+                    "interactionPolicy": {
+                        "@id": "gts:interactionPolicy",
+                        "@type": "@id",
+                    },
+                    "canQuote": {"@id": "gts:canQuote", "@type": "@id"},
+                    "automaticApproval": {
+                        "@id": "gts:automaticApproval",
+                        "@type": "@id",
+                    },
+                    "manualApproval": {
+                        "@id": "gts:manualApproval",
+                        "@type": "@id",
+                    },
+                    "interactingObject": {
+                        "@id": "gts:interactingObject",
+                        "@type": "@id",
+                    },
+                    "interactionTarget": {
+                        "@id": "gts:interactionTarget",
+                        "@type": "@id",
+                    },
                     "oauthRegistrationEndpoint": {
                         "@id": "litepub:oauthRegistrationEndpoint",
                         "@type": "@id",
@@ -649,7 +682,9 @@ def builtin_document_loader(url: str, options={}):
             return schemas["unknown"]
 
 
-def canonicalise(json_data: dict, include_security: bool = False) -> dict:
+def canonicalise(
+    json_data: dict, include_security: bool = False, outbound: bool = True
+) -> dict:
     """
     Given an ActivityPub JSON-LD document, round-trips it through the LD
     systems to end up in a canonicalised, compacted format.
@@ -688,7 +723,35 @@ def canonicalise(json_data: dict, include_security: bool = False) -> dict:
 
     json_data["@context"] = context
 
-    return jsonld.compact(jsonld.expand(json_data), context)
+    j = jsonld.compact(jsonld.expand(json_data), context)
+    if not outbound:
+        return j
+
+    # patch outbound json to make it compatible with various implementations
+    def _patch(v):
+        return (
+            [
+                x
+                if x != "as:Public"
+                else "https://www.w3.org/ns/activitystreams#Public"
+                for x in v
+            ]
+            if isinstance(v, list)
+            else v
+            if v != "as:Public"
+            else ["https://www.w3.org/ns/activitystreams#Public"]
+        )
+
+    for k in ["to", "cc"]:
+        v = j.get(k)
+        if v:
+            j[k] = _patch(v)
+    if isinstance(j.get("object"), dict):
+        for k in ["to", "cc"]:
+            v = j["object"].get(k)
+            if v:
+                j["object"][k] = _patch(v)
+    return j
 
 
 def get_list(container, key) -> list:
@@ -750,8 +813,10 @@ def get_value_or_map(data, key, map_key):
         return data[key]
     if map_key in data:
         if "und" in map_key:
-            return data[map_key]["und"]
-        return list(data[map_key].values())[0]
+            v = data[map_key]["und"]
+        else:
+            v = list(data[map_key].values())[0]
+        return v[0] if isinstance(v, list) and len(v) else v
     raise ActivityPubFormatError(f"Cannot find {key} or {map_key}")
 
 

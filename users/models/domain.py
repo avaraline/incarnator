@@ -14,7 +14,7 @@ from django.db import models
 
 from core.models import Config
 from stator.models import State, StateField, StateGraph, StatorModel
-from users.schemas import NodeInfo
+from users.schemas import NodeInfo, NodeInfoSoftware, NodeInfoUsage
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +194,17 @@ class Domain(StatorModel):
         """
         Fetch the /NodeInfo/2.0 for the domain
         """
+        if self.domain == "threads.net":
+            # too bad Meta don't implement node info
+            return NodeInfo(
+                version="2.0",
+                software=NodeInfoSoftware(name="threads.net"),
+                protocols=["activitypub"],
+                openRegistrations=True,
+                usage=NodeInfoUsage(),
+                metadata={},
+            )
+
         nodeinfo20_url = f"https://{self.domain}/nodeinfo/2.0"
 
         with httpx.Client(
@@ -208,17 +219,19 @@ class Domain(StatorModel):
                 )
             except httpx.HTTPError:
                 pass
-            except (ssl.SSLCertVerificationError, ssl.SSLError):
+            except (ssl.SSLCertVerificationError, ssl.SSLError, UnicodeDecodeError):
                 return None
             else:
                 try:
                     for link in response.json().get("links", []):
-                        if "://nodeinfo.diaspora.software/ns/schema/2." in link.get(
-                            "rel"
+                        if isinstance(
+                            link, dict
+                        ) and "://nodeinfo.diaspora.software/ns/schema/2." in str(
+                            link.get("rel", "")
                         ):
                             nodeinfo20_url = link.get("href", nodeinfo20_url)
                             break
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, AttributeError):
                     pass
 
             try:
@@ -228,7 +241,11 @@ class Domain(StatorModel):
                     headers={"Accept": "application/json"},
                 )
                 response.raise_for_status()
-            except (httpx.HTTPError, ssl.SSLCertVerificationError) as ex:
+            except (
+                httpx.HTTPError,
+                ssl.SSLCertVerificationError,
+                UnicodeDecodeError,
+            ) as ex:
                 response = getattr(ex, "response", None)
                 if (
                     response
@@ -249,7 +266,11 @@ class Domain(StatorModel):
 
             try:
                 info = NodeInfo(**response.json())
-            except (json.JSONDecodeError, pydantic.ValidationError) as ex:
+            except (
+                json.JSONDecodeError,
+                pydantic.ValidationError,
+                UnicodeDecodeError,
+            ) as ex:
                 logger.warning(
                     "Client error decoding nodeinfo: %s %s",
                     nodeinfo20_url,

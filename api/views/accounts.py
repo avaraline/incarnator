@@ -1,19 +1,19 @@
 from typing import Any
 
+from activities.models import Post, PostInteraction, PostInteractionStates
+from activities.services import SearchService
+from core.models import Config
 from django.core.files import File
 from django.http import HttpRequest
 from django.shortcuts import get_object_or_404
+from hatchway import ApiResponse, QueryOrBody, api_view
+from users.services import IdentityService
+from users.shortcuts import by_handle_or_404
 
-from activities.models import Post, PostInteraction, PostInteractionStates
-from activities.services import SearchService
 from api import schemas
 from api.decorators import scope_required
 from api.pagination import MastodonPaginator, PaginatingApiResponse, PaginationResult
-from core.models import Config
-from hatchway import ApiResponse, QueryOrBody, api_view
 from users.models import Identity, IdentityStates
-from users.services import IdentityService
-from users.shortcuts import by_handle_or_404
 
 
 @scope_required("read")
@@ -163,6 +163,18 @@ def lookup(request: HttpRequest, acct: str) -> schemas.Account:
 
 @scope_required("read:accounts")
 @api_view.get
+def accounts_by_ids(request: HttpRequest) -> list[schemas.Account]:
+    ids = request.GET.getlist("id[]")
+    if not ids:
+        return []
+    identities = Identity.objects.filter(
+        pk__in=ids,
+    ).exclude(restriction=Identity.Restriction.blocked)
+    return [schemas.Account.from_identity(i) for i in identities]
+
+
+@scope_required("read:accounts")
+@api_view.get
 def account(request, id: str) -> schemas.Account:
     identity = get_object_or_404(
         Identity.objects.exclude(restriction=Identity.Restriction.blocked),
@@ -191,7 +203,9 @@ def account_statuses(
     )
     queryset = (
         identity.posts.not_hidden()
-        .unlisted(include_replies=not exclude_replies)
+        .visible_to(
+            request.identity, include_replies=not exclude_replies, include_muted=True
+        )
         .select_related("author", "author__domain")
         .prefetch_related(
             "attachments",
@@ -203,6 +217,7 @@ def account_statuses(
         )
         .order_by("-created")
     )
+
     if pinned:
         queryset = queryset.filter(
             interactions__type=PostInteraction.Types.pin,
@@ -281,7 +296,7 @@ def account_unblock(request, id: str) -> schemas.Relationship:
     return schemas.Relationship.from_identity_pair(identity, request.identity)
 
 
-@scope_required("write:blocks")
+@scope_required("write:mutes")
 @api_view.post
 def account_mute(
     request,
@@ -299,13 +314,27 @@ def account_mute(
     return schemas.Relationship.from_identity_pair(identity, request.identity)
 
 
-@scope_required("write:blocks")
+@scope_required("write:mutes")
 @api_view.post
 def account_unmute(request, id: str) -> schemas.Relationship:
     identity = get_object_or_404(Identity, pk=id)
     service = IdentityService(request.identity)
     service.unmute(identity)
     return schemas.Relationship.from_identity_pair(identity, request.identity)
+
+
+@scope_required("write:accounts")
+@api_view.post
+def account_note(
+    request,
+    id: str,
+    comment: QueryOrBody[str] = "",
+) -> schemas.Relationship:
+    identity = get_object_or_404(
+        Identity.objects.exclude(restriction=Identity.Restriction.blocked), pk=id
+    )
+    service = IdentityService(identity)
+    return schemas.Relationship(**service.set_note(request.identity, comment))
 
 
 @api_view.get

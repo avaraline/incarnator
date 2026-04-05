@@ -25,7 +25,7 @@ class Login(LoginView):
 
 
 class Logout(LogoutView):
-    pass
+    next_page = "/account/logout"
 
 
 class Signup(FormView):

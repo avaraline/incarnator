@@ -290,3 +290,8 @@ class Config(models.Model):
         expand_content_warnings: bool = False
         boosts_on_profile: bool = True
         preferred_posting_language: str = ""
+        notification_policy_not_following: str = "accept"
+        notification_policy_not_followers: str = "accept"
+        notification_policy_new_accounts: str = "accept"
+        notification_policy_private_mentions: str = "accept"
+        notification_policy_limited_accounts: str = "accept"

@@ -187,7 +187,7 @@ class Hashtag(StatorModel):
         sql = """
             SELECT jsonb_array_elements_text(hashtags) AS tag, count(id) AS uses
             FROM activities_post
-            WHERE state NOT IN ('deleted', 'deleted_fanned_out') AND published >= %s
+            WHERE state NOT IN ('deleted', 'deleted_fanned_out') AND visibility IN (0,1,4) AND published >= %s
             GROUP BY tag
             ORDER BY uses DESC
             LIMIT %s
@@ -293,6 +293,7 @@ class Hashtag(StatorModel):
         Returns the AP JSON to add a featured tag to the given identity.
         """
         return {
+            "id": identity.actor_uri + "collections/featured/#add/" + self.hashtag,
             "type": "Add",
             "actor": identity.actor_uri,
             "target": identity.actor_uri + "collections/featured/",
@@ -304,6 +305,7 @@ class Hashtag(StatorModel):
         Returns the AP JSON to remove a featured tag from the given identity.
         """
         return {
+            "id": identity.actor_uri + "collections/featured/#remove/" + self.hashtag,
             "type": "Remove",
             "actor": identity.actor_uri,
             "target": identity.actor_uri + "collections/featured/",

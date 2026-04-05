@@ -200,3 +200,30 @@ def test_content_link(api_client, identity, remote_identity):
         response["content"]
         == '<p>Takahē - return to the wild - <a href="https://www.youtube.com/watch?v=IG423K3pmQI" rel="nofollow" class="ellipsis" title="www.youtube.com/watch?v=IG423K3pmQI"><span class="invisible">https://</span><span class="ellipsis">www.youtube.com/watch?v=IG423K</span><span class="invisible">3pmQI</span></a></p>'
     )
+
+
+@pytest.mark.django_db
+def test_post_status_with_quote(api_client, identity):
+    """Creating a status with quoted_status_id."""
+    original = Post.create_local(author=identity, content="Original post")
+    response = api_client.post(
+        "/api/v1/statuses",
+        content_type="application/json",
+        data={
+            "status": "Quoting this",
+            "quoted_status_id": str(original.pk),
+        },
+    ).json()
+    assert response["quote"] is not None
+    assert response["quote"]["state"] == "accepted"
+    assert response["quote"]["quoted_status"]["id"] == str(original.pk)
+
+
+@pytest.mark.django_db
+def test_get_quotes_of_status(api_client, identity):
+    """List quotes of a status."""
+    original = Post.create_local(author=identity, content="Original post")
+    quote = Post.create_local(author=identity, content="My quote", quote=original)
+    response = api_client.get(f"/api/v1/statuses/{original.pk}/quotes").json()
+    assert len(response) == 1
+    assert response[0]["id"] == str(quote.pk)

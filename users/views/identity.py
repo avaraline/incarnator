@@ -1,11 +1,14 @@
+import re
 import string
 
 from django import forms
+from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.contrib.syndication.views import Feed
 from django.core import validators
-from django.http import Http404, JsonResponse
+from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import redirect
+from django.utils import timezone as tz
 from django.utils.decorators import method_decorator
 from django.utils.feedgenerator import Rss201rev2Feed
 from django.utils.xmlutils import SimplerXMLGenerator
@@ -56,18 +59,27 @@ class ViewIdentity(ListView):
         if request.ap_json:
             # Return actor info
             return self.serve_actor(self.identity)
+        elif self.identity.deleted:
+            raise Http404("Deleted identity")
+        elif self.identity.local and self.identity.profile_uri:
+            return redirect(self.identity.profile_uri)
         else:
             # Show normal page
             return super().get(request, identity=self.identity)
 
     def serve_actor(self, identity):
+        if settings.SETUP.NO_FEDERATION:
+            return HttpResponse(status=503)
         # If this not a local actor, redirect to their canonical URI
         if not identity.local:
             return redirect(identity.actor_uri)
-        return JsonResponse(
+        r = JsonResponse(
             canonicalise(identity.to_ap(), include_security=True),
             content_type="application/activity+json",
         )
+        if identity.deleted and tz.now() - identity.deleted > tz.timedelta(days=3):
+            r.status_code = 410
+        return r
 
     def get_queryset(self):
         return TimelineService(None).identity_public(
@@ -183,8 +195,15 @@ class IdentityFeed(Feed):
             )[:20]
         ]
 
+    def item_title(self, item: Post):
+        if item.summary:
+            return item.summary
+        txt = item.safe_content_remote().replace("<br>", "\n").replace("</p>", "\n")
+        txt = re.sub(r"<.*?>", "", txt).strip().split("\n")[0]
+        return txt if len(txt) < 100 else txt[:100] + "..."
+
     def item_description(self, item: Post):
-        return item.safe_content_remote()
+        return re.sub(r"[\x00-\x08\x0B-\x0C\x0E-\x1F]", "", item.safe_content_remote())
 
     def item_link(self, item: Post):
         return item.absolute_object_uri()
@@ -233,13 +252,15 @@ class IdentityFollows(ListView):
         return super().get(request, identity=self.identity)
 
     def serve_ap_json(self):
+        if settings.SETUP.NO_FEDERATION:
+            return HttpResponse(status=503)
         # TODO return list based on Config.load_identity(self.identity).visible_follows
         return JsonResponse(
             canonicalise(
                 {
                     "type": "OrderedCollection",
                     "totalItems": self.get_queryset().count(),
-                    # "orderedItems": [],
+                    "orderedItems": [],
                 }
             ),
             content_type="application/activity+json",

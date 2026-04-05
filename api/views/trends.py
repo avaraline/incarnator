@@ -6,6 +6,7 @@ from django.http import HttpRequest
 from django.utils import timezone
 
 from activities.models import Hashtag, Post
+from activities.models.preview_card import PreviewCard
 from api import schemas
 from api.decorators import scope_required
 from core.models import Config
@@ -43,6 +44,7 @@ def trends_statuses(
         popular_post_ids = list(
             Post.objects.not_hidden()
             .public()
+            .visible_to(request.identity)
             .filter(author__discoverable=True)
             .filter(published__gte=since)
             .annotate(num_interactions=Count("interactions"))
@@ -57,6 +59,7 @@ def trends_statuses(
         Post.objects.not_hidden()
         .filter(id__in=popular_post_ids[offset : offset + limit])
         .order_by("-published")
+        .visible_to(request.identity)
     )
     return schemas.Status.map_from_post(list(posts), request.identity)
 
@@ -66,7 +69,23 @@ def trends_statuses(
 def trends_links(
     request: HttpRequest,
     limit: int = 10,
-    offset: int | None = None,
-) -> list:
-    # We don't implement this yet
-    return []
+    offset: int = 0,
+) -> list[dict]:
+    cached = cache.get("trends_links", None)
+    if cached is not None:
+        return cached[offset : offset + limit]
+
+    since = timezone.now() - timedelta(days=7)
+    cards = (
+        PreviewCard.objects.filter(
+            state="fetched",
+            fetched_at__gte=since,
+        )
+        .exclude(title="")
+        .annotate(num_posts=Count("posts"))
+        .filter(num_posts__gte=1)
+        .order_by("-num_posts", "-fetched_at")[:100]
+    )
+    links = [card.to_mastodon_json() | {"history": []} for card in cards]
+    cache.set("trends_links", links, Config.system.cache_timeout_trends)
+    return links[offset : offset + limit]

@@ -11,6 +11,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 from lxml import etree
+from pyld.jsonld import JsonLdError
 
 from api.models.push import PushSubscription, PushType
 from core.exceptions import ActorMismatchError
@@ -53,10 +54,11 @@ class IdentityStates(StateGraph):
 
     outdated = State(try_interval=3600, force_initial=True)
     updated = State(try_interval=86400 * 7, attempt_immediately=False)
+    connection_issue = State(externally_progressed=True)
 
     edited = State(try_interval=300, attempt_immediately=True)
     deleted = State(try_interval=300, attempt_immediately=True)
-    deleted_fanned_out = State(delete_after=86400 * 7)
+    deleted_fanned_out = State(externally_progressed=True)
 
     moved = State(try_interval=300, attempt_immediately=True)
     moved_fanned_out = State(externally_progressed=True)
@@ -75,19 +77,35 @@ class IdentityStates(StateGraph):
     moved.transitions_to(updated)
     moved_fanned_out.transitions_to(updated)
 
+    outdated.transitions_to(connection_issue)
+    outdated.times_out_to(connection_issue, 60 * 60 * 24 * 14)
+
     @classmethod
     def group_deleted(cls):
         return [cls.deleted, cls.deleted_fanned_out]
 
     @classmethod
-    def targets_fan_out(cls, identity: "Identity", type_: str) -> None:
+    def targets_fan_out(cls, identity: "Identity", type_: str, broadcast=False) -> None:
         from activities.models import FanOut
+
         from users.models import Follow
 
+        if broadcast:
+            for target in (
+                Identity.objects.filter(local=False, shared_inbox_uri__isnull=False)
+                .exclude(state=IdentityStates.connection_issue)
+                .distinct("shared_inbox_uri")
+            ):
+                FanOut.objects.create(
+                    identity=target, type=type_, subject_identity=identity
+                )
+            return
         # Fan out to each target
         shared_inboxes = set()
-        for follower in Follow.objects.select_related("source", "target").filter(
-            target=identity
+        for follower in (
+            Follow.objects.select_related("source", "target")
+            .filter(target=identity)
+            .exclude(source__state=IdentityStates.connection_issue)
         ):
             # Dedupe shared_inbox_uri
             shared_uri = follower.source.shared_inbox_uri
@@ -133,6 +151,7 @@ class IdentityStates(StateGraph):
             PostStates,
             TimelineEvent,
         )
+
         from users.models import (
             Bookmark,
             Follow,
@@ -168,7 +187,7 @@ class IdentityStates(StateGraph):
             instance.interactions, PostInteractionStates.undone
         )
         # Fanout the deletion and unfollow from both directions
-        cls.targets_fan_out(instance, FanOut.Types.identity_deleted)
+        cls.targets_fan_out(instance, FanOut.Types.identity_deleted, broadcast=True)
         for follower in Follow.objects.filter(target=instance):
             follower.transition_perform(FollowStates.rejecting)
         for following in Follow.objects.filter(source=instance):
@@ -188,7 +207,7 @@ class IdentityStates(StateGraph):
 
     @classmethod
     def handle_updated(cls, instance: "Identity"):
-        if not instance.local and instance.state_age > Config.system.identity_max_age:
+        if instance.state_age > Config.system.identity_max_age:
             return cls.outdated
 
 
@@ -253,8 +272,8 @@ class Identity(StatorModel):
     inbox_uri = models.CharField(max_length=500, blank=True, null=True)
     shared_inbox_uri = models.CharField(max_length=500, blank=True, null=True)
     outbox_uri = models.CharField(max_length=500, blank=True, null=True)
-    icon_uri = models.CharField(max_length=500, blank=True, null=True)
-    image_uri = models.CharField(max_length=500, blank=True, null=True)
+    icon_uri = models.CharField(max_length=5000, blank=True, null=True)
+    image_uri = models.CharField(max_length=5000, blank=True, null=True)
     followers_uri = models.CharField(max_length=500, blank=True, null=True)
     following_uri = models.CharField(max_length=500, blank=True, null=True)
     featured_collection_uri = models.CharField(max_length=500, blank=True, null=True)
@@ -364,7 +383,7 @@ class Identity(StatorModel):
                 remote_url=self.icon_uri,
             )
         else:
-            return StaticAbsoluteUrl("img/unknown-icon-128.png")
+            return AutoAbsoluteUrl("/s/img/avatar.svg")
 
     def local_image_url(self) -> RelativeAbsoluteUrl | None:
         """
@@ -515,7 +534,7 @@ class Identity(StatorModel):
                     )
                 else:
                     return cls.objects.get(
-                        username__iexact=username,
+                        username=username,
                         domain_id=domain,
                     )
             except cls.DoesNotExist:
@@ -578,11 +597,17 @@ class Identity(StatorModel):
 
     @property
     def handle(self):
-        if self.username is None:
-            return "(unknown user)"
-        if self.domain_id:
-            return f"{self.username}@{self.domain_id}"
-        return f"{self.username}@(unknown server)"
+        u = self.username or "-invalid-user-"
+        d = self.domain_id or self.actor_domain or "domain.invalid"
+        return f"{u}@{d}"
+
+    @property
+    def uri_domain(self):
+        return self.domain.uri_domain if self.domain else self.actor_domain
+
+    @property
+    def actor_domain(self):
+        return self.actor_uri.split("://")[1].split("/")[0].lower()
 
     @property
     def data_age(self) -> float:
@@ -607,6 +632,10 @@ class Identity(StatorModel):
     @property
     def limited(self) -> bool:
         return self.restriction == self.Restriction.limited
+
+    @property
+    def is_group(self) -> bool:
+        return self.actor_type == "group"
 
     ### ActivityPub (outbound) ###
 
@@ -649,7 +678,7 @@ class Identity(StatorModel):
         self.ensure_uris()
         response = {
             "id": self.actor_uri,
-            "type": self.actor_type.title(),
+            "type": "Tombstone" if self.deleted else self.actor_type.title(),
             "inbox": self.inbox_uri,
             "outbox": self.outbox_uri,
             "featured": self.featured_collection_uri,
@@ -676,6 +705,12 @@ class Identity(StatorModel):
                 "type": "Image",
                 "mediaType": media_type_from_filename(self.icon.name),
                 "url": self.icon.url,
+            }
+        elif self.icon_uri:
+            response["icon"] = {
+                "type": "Image",
+                "mediaType": media_type_from_filename(self.icon_uri),
+                "url": self.icon_uri,
             }
         if self.image:
             response["image"] = {
@@ -833,7 +868,8 @@ class Identity(StatorModel):
                 # hitting the webfinger URL on the domain we were given to handle
                 # incorrectly setup servers.
                 if response.status_code == 200 and response.content.strip():
-                    tree = etree.fromstring(response.content)
+                    parser = etree.XMLParser(resolve_entities=False, no_network=True)
+                    tree = etree.fromstring(response.content, parser=parser)
                     template = tree.xpath(
                         "string(.//*[local-name() = 'Link' and @rel='lrdd' and (not(@type) or @type='application/jrd+json')]/@template)"
                     )
@@ -904,7 +940,7 @@ class Identity(StatorModel):
                     and link.get("rel") == "self"
                 ):
                     return link["href"], data["subject"]
-        except KeyError:
+        except (KeyError, AttributeError):
             # Server returning wrong payload structure
             pass
         return None, None
@@ -929,15 +965,14 @@ class Identity(StatorModel):
                 and response.status_code < 500
                 and response.status_code not in [401, 403, 404, 406, 410]
             ):
-                raise ValueError(
-                    f"Client error fetching featured collection: {response.status_code}",
-                    response.content,
+                logger.warning(
+                    f"Error fetching collection {uri} {response.status_code}"
                 )
             return 0, []
 
         try:
             json_data = json_from_response(response)
-            data = canonicalise(json_data, include_security=True)
+            data = canonicalise(json_data, include_security=True, outbound=False)
             total = data.get("totalItems", 0)
             # canonicalise seems to turn single-item `items` list into a dict?? gross
             if value := data.get("orderedItems"):
@@ -948,13 +983,10 @@ class Identity(StatorModel):
                 items = []
             return total, items
         except ValueError:
-            # Some servers return these with a 200 status code!
-            if b"not found" in response.content.lower():
-                return 0, []
-            raise ValueError(
-                "JSON parse error fetching collection",
-                response.content,
+            logger.info(
+                f"JSON parse error fetching collection {uri} {response.content}"
             )
+            return 0, []
 
     @classmethod
     def fetch_pinned_post_uris(cls, client: httpx.Client, uri: str) -> list[str]:
@@ -966,7 +998,7 @@ class Identity(StatorModel):
         for item in items:
             if not isinstance(item, dict):
                 continue
-            if item["type"] == "Note":
+            if item.get("type") == "Note":
                 ids.append(item["id"])
         return ids
 
@@ -994,6 +1026,8 @@ class Identity(StatorModel):
 
         if self.local:
             raise ValueError("Cannot fetch local identities")
+        if (self.actor_uri or "").lower().split(":")[0] not in ["http", "https"]:
+            return False
         try:
             response = SystemActor().signed_request(
                 method="get",
@@ -1022,7 +1056,7 @@ class Identity(StatorModel):
         try:
             json_data = json_from_response(response)
             document = canonicalise(json_data, include_security=True)
-        except ValueError:
+        except (ValueError, JsonLdError):
             # servers with empty or invalid responses are inevitable
             logger.info(
                 "Invalid response fetching actor %s",
@@ -1065,7 +1099,7 @@ class Identity(StatorModel):
         self.aliases = document.get("alsoKnownAs")
         for attachment in get_list(document, "attachment"):
             if (
-                attachment["type"] == "PropertyValue"
+                attachment.get("type") == "PropertyValue"
                 and "name" in attachment
                 and "value" in attachment
             ):
@@ -1102,7 +1136,10 @@ class Identity(StatorModel):
         # Emojis (we need the domain so we do them here)
         for tag in get_list(document, "tag"):
             if tag["type"].lower() in ["toot:emoji", "emoji"]:
-                Emoji.by_ap_tag(self.domain, tag, create=True)
+                try:
+                    Emoji.by_ap_tag(self.domain, tag, create=True)
+                except (KeyError, ValueError):
+                    pass
         # Mark as fetched
         self.fetched = timezone.now()
         # Update the post stats
@@ -1154,7 +1191,7 @@ class Identity(StatorModel):
         return {
             "id": str(self.pk),
             "username": self.username or "",
-            "url": self.absolute_profile_uri() or "",
+            "url": self.absolute_profile_uri() or self.actor_uri or "",
             "acct": self.handle or "",
         }
 
@@ -1177,6 +1214,7 @@ class Identity(StatorModel):
             "username": self.username or "",
             "acct": self.username if source else self.handle,
             "url": self.absolute_profile_uri() or "",
+            "uri": self.actor_uri or "",
             "display_name": self.name or "",
             "note": self.summary or "",
             "avatar": self.local_icon_url().absolute,
@@ -1201,8 +1239,8 @@ class Identity(StatorModel):
             "group": self.actor_type.lower() == "group",
             "discoverable": self.discoverable,
             "indexable": self.indexable,
-            "suspended": False,
-            "limited": False,
+            "suspended": self.restriction == Identity.Restriction.blocked,
+            "limited": self.restriction == Identity.Restriction.limited,
             "created_at": format_ld_date(
                 self.created.replace(hour=0, minute=0, second=0, microsecond=0)
             ),
@@ -1210,6 +1248,7 @@ class Identity(StatorModel):
             "statuses_count": stats.get("statuses_count", 0),
             "followers_count": stats.get("followers_count", 0),
             "following_count": stats.get("following_count", 0),
+            "hide_collections": not Config.load_identity(self).visible_follows,
         }
         if source:
             privacy_map = {

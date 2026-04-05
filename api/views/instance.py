@@ -1,4 +1,5 @@
 import datetime
+import markdown_it
 
 import pycountry
 from django.conf import settings
@@ -11,6 +12,19 @@ from core.models import Config
 from hatchway import api_view
 from takahe import __version__
 from users.models import Domain, Identity
+
+
+def _build_rules(policy_rules: str | None) -> list[dict]:
+    return [
+        {"id": str(i + 1), "text": s, "hint": ""}
+        for i, s in enumerate(
+            [
+                s.strip()
+                for s in (policy_rules or "").replace("\r", "").split("\n\n")
+                if s.strip()
+            ]
+        )
+    ]
 
 
 @api_view.get
@@ -27,13 +41,14 @@ def instance_info_v1(request) -> dict:
     admin_identity = (
         Identity.objects.filter(users__admin=True).order_by("created").first()
     )
+    rules = _build_rules(request.config.policy_rules)
     return {
         "uri": request.headers.get("host", settings.SETUP.MAIN_DOMAIN),
         "title": request.config.site_name,
         "short_description": "",
         "description": "",
         "email": "",
-        "version": f"takahe/{__version__}",
+        "version": f"4.0.4 (compatible; Takahe {__version__})",
         "urls": {},
         "stats": stats,
         "thumbnail": request.config.site_banner,
@@ -59,6 +74,9 @@ def instance_info_v1(request) -> dict:
                 ],
                 "image_size_limit": (1024**2) * 10,
                 "image_matrix_limit": 2000 * 2000,
+                "video_size_limit": (1024**2) * 10,
+                "video_frame_rate_limit": 60,
+                "video_matrix_limit": 2000 * 2000,
             },
             "polls": {
                 "max_options": 4,
@@ -70,7 +88,17 @@ def instance_info_v1(request) -> dict:
         "contact_account": (
             schemas.Account.from_identity(admin_identity) if admin_identity else None
         ),
-        "rules": [],
+        "rules": rules,
+        "pleroma": {
+            "metadata": {
+                "features": [
+                    "mastodon_api",
+                    "quote_posting",
+                    "editing",
+                    "polls",
+                ],
+            },
+        },
     }
 
 
@@ -86,10 +114,11 @@ def instance_info_v2(request) -> dict:
     admin_identity = (
         Identity.objects.filter(users__admin=True).order_by("created").first()
     )
+    rules = _build_rules(request.config.policy_rules)
     return {
         "domain": current_domain.domain,
         "title": Config.system.site_name,
-        "version": f"takahe/{__version__}",
+        "version": f"4.0.4 (compatible; Takahe {__version__})",
         "source_url": "https://github.com/jointakahe/takahe",
         "description": "",
         "usage": {
@@ -123,7 +152,7 @@ def instance_info_v2(request) -> dict:
                 ],
                 "image_size_limit": (1024**2) * 10,
                 "image_matrix_limit": 2000 * 2000,
-                "video_size_limit": 0,
+                "video_size_limit": (1024**2) * 10,
                 "video_frame_rate_limit": 60,
                 "video_matrix_limit": 2000 * 2000,
             },
@@ -149,7 +178,17 @@ def instance_info_v2(request) -> dict:
                 else None
             ),
         },
-        "rules": [],
+        "rules": rules,
+        "pleroma": {
+            "metadata": {
+                "features": [
+                    "mastodon_api",
+                    "quote_posting",
+                    "editing",
+                    "polls",
+                ],
+            },
+        },
     }
 
 
@@ -207,3 +246,14 @@ def languages(request) -> list:
         ]
         cache.set("instance_languages", languages, timeout=3600)
     return languages
+
+
+@api_view.get
+def extended_description(request) -> dict:
+    txt = markdown_it.MarkdownIt().render(request.config.site_about)
+    return {"content": txt}
+
+
+@api_view.get
+def rules(request) -> list[dict]:
+    return _build_rules(request.config.policy_rules)

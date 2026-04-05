@@ -1,24 +1,28 @@
 ARG IMAGE_HOST=python
 ARG IMAGE_LABEL=3.13-slim
-ARG BUILDER_LABEL=3.13
+
+# Build stage: install dependencies with uv
+
+FROM ${IMAGE_HOST}:${IMAGE_LABEL} AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml uv.lock /app/
+WORKDIR /app
+
+RUN uv sync --frozen --no-dev --no-install-project
 
 
-# Temporary image for building blurhash
-
-FROM ${IMAGE_HOST}:${BUILDER_LABEL} AS builder
-RUN pip wheel "blurhash-python==1.2.2"
-
-
-# The actual image
+# Runtime image
 
 FROM ${IMAGE_HOST}:${IMAGE_LABEL}
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    GUNICORN_CMD_ARGS="--workers 8"
-
-COPY --from=builder /blurhash*.whl /tmp
-COPY requirements.lock requirements.lock
+    GUNICORN_CMD_ARGS="--workers 8" \
+    PATH="/takahe/.venv/bin:$PATH"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -27,8 +31,6 @@ RUN apt-get update \
         nginx \
         busybox \
         postgresql-client \
-    && python -m pip install /tmp/*.whl \
-    && python -m pip install --no-cache-dir -r requirements.lock \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /cache
@@ -41,6 +43,7 @@ COPY docker/nginx.conf /etc/nginx/
 COPY docker/nginx.conf.d/* /etc/nginx/conf.d/
 
 COPY . /takahe
+COPY --from=builder /app/.venv /takahe/.venv
 
 # Sanity-test the nginx config
 RUN nginx -t

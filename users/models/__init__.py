@@ -1,3 +1,4 @@
+from .account_note import AccountNote  # noqa
 from .announcement import Announcement  # noqa
 from .block import Block, BlockStates  # noqa
 from .bookmark import Bookmark  # noqa

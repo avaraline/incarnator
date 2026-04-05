@@ -38,11 +38,25 @@ class TimelineService:
         )
 
     def home(self) -> models.QuerySet[TimelineEvent]:
+        exclusive_member_ids = Identity.objects.filter(
+            in_lists__identity=self.identity,
+            in_lists__exclusive=True,
+        ).values("id")
         return (
             self.event_queryset()
             .filter(
                 identity=self.identity,
                 type__in=[TimelineEvent.Types.post, TimelineEvent.Types.boost],
+            )
+            .exclude(
+                models.Q(
+                    type=TimelineEvent.Types.post,
+                    subject_post__author_id__in=exclusive_member_ids,
+                )
+                | models.Q(
+                    type=TimelineEvent.Types.boost,
+                    subject_identity_id__in=exclusive_member_ids,
+                )
             )
             .order_by("-created")
         )
@@ -55,7 +69,9 @@ class TimelineService:
             .order_by("-id")
         )
         if self.identity is not None:
-            queryset = queryset.filter(author__domain=self.identity.domain)
+            queryset = queryset.filter(author__domain=self.identity.domain).visible_to(
+                self.identity, include_replies=True
+            )
         elif domain is not None:
             queryset = queryset.filter(author__domain=domain)
         return queryset
@@ -64,6 +80,7 @@ class TimelineService:
         return (
             PostService.queryset(exclude_threshold=7)
             .public()
+            .visible_to(self.identity)
             .filter(author__restriction=Identity.Restriction.none)
             .order_by("-id")
         )
@@ -72,9 +89,9 @@ class TimelineService:
         return (
             PostService.queryset(exclude_threshold=7)
             .public()
+            .visible_to(self.identity)
             .filter(author__restriction=Identity.Restriction.none)
             .tagged_with(hashtag)
-            .order_by("-id")
         )
 
     def notifications(self, types: list[str]) -> models.QuerySet[TimelineEvent]:
@@ -145,6 +162,11 @@ class TimelineService:
                 interactions__type=PostInteraction.Types.pin,
                 interactions__state__in=PostInteractionStates.group_active(),
             )
+            .visible_to(
+                self.identity,
+                include_replies=True,
+                include_muted=True,
+            )
         )
 
     def likes(self) -> models.QuerySet[Post]:
@@ -157,6 +179,31 @@ class TimelineService:
                 interactions__identity=self.identity,
                 interactions__type=PostInteraction.Types.like,
                 interactions__state__in=PostInteractionStates.group_active(),
+            )
+            .order_by("-id")
+        )
+
+    def conversations(self) -> models.QuerySet:
+        """Return conversations for the current identity, excluding dismissed ones."""
+        from activities.models.conversation import Conversation
+
+        return (
+            Conversation.objects.filter(
+                memberships__identity=self.identity,
+                memberships__dismissed=False,
+            )
+            .select_related(
+                "last_post",
+                "last_post__author",
+                "last_post__author__domain",
+            )
+            .prefetch_related(
+                "participants",
+                "participants__domain",
+                "last_post__attachments",
+                "last_post__mentions",
+                "last_post__mentions__domain",
+                "last_post__emojis",
             )
             .order_by("-id")
         )
@@ -179,11 +226,14 @@ class TimelineService:
         # We only need to include this if we need to filter on it.
         include_author = alist.replies_policy == "followed"
         members = alist.members.all()
-        queryset = PostService.queryset(include_reply_to_author=include_author)
+        queryset = PostService.queryset(
+            include_reply_to_author=include_author
+        ).visible_to(
+            self.identity,
+            include_replies=True,
+            include_muted=True,  # Twitter like behavior
+        )
         match alist.replies_policy:
-            case "list":
-                # The default is to show posts (and replies) from list members.
-                criteria = models.Q(author__in=members)
             case "none":
                 # Don't show any replies, just original posts from list members.
                 criteria = models.Q(author__in=members) & models.Q(
@@ -196,4 +246,7 @@ class TimelineService:
                     models.Q(author__in=IdentityService(self.identity).following())
                     & models.Q(in_reply_to_author_id__in=members)
                 )
+            case _:
+                # The default is to show posts (and replies) from list members.
+                criteria = models.Q(author__in=members)
         return queryset.filter(criteria).order_by("-id")

@@ -52,7 +52,9 @@ class JsonViewer(FormView):
             else:
                 try:
                     json_data = json_from_response(response)
-                    document = canonicalise(json_data, include_security=True)
+                    document = canonicalise(
+                        json_data, include_security=True, outbound=False
+                    )
                 except ValueError as ex:
                     result = str(ex)
                 else:
