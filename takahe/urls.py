@@ -291,6 +291,9 @@ urlpatterns = [
     # Posts
     path("@<handle>/compose/", compose.Compose.as_view(), name="compose"),
     path("@<handle>/posts/<int:post_id>/", posts.Individual.as_view()),
+    path(
+        "@<handle>/posts/<int:post_id>/replies/", posts.PostRepliesCollection.as_view()
+    ),
     # Authentication
     path("auth/login/", auth.Login.as_view(), name="login"),
     path("auth/logout/", auth.Logout.as_view(), name="logout"),
@@ -350,6 +353,11 @@ urlpatterns = [
         "^proxy/post_attachment/(?P<attachment_id>[^/]+)/((?P<image_hash>[^/]+))?$",
         mediaproxy.PostAttachmentCacheView.as_view(),
         name="proxy_post_attachment",
+    ),
+    re_path(
+        r"^proxy/preview_card/(?P<card_id>[^/]+)/((?P<image_hash>[^/]+))?$",
+        mediaproxy.PreviewCardImageCacheView.as_view(),
+        name="proxy_preview_card",
     ),
     re_path(
         "^proxy/emoji/(?P<emoji_id>[^/]+)/((?P<image_hash>[^/]+))?$",

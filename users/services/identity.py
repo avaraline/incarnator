@@ -18,6 +18,7 @@ from core.files import resize_image
 from core.html import FediverseHtmlParser
 from stator.exceptions import TryAgainLater
 from users.models import (
+    AccountNote,
     Block,
     BlockStates,
     Domain,
@@ -271,6 +272,32 @@ class IdentityService:
         with this identity.
         """
         relationships = self.relationships(from_identity)
+        return self._build_relationship_json(relationships, from_identity)
+
+    def _get_note(self, from_identity: Identity) -> str:
+        try:
+            return AccountNote.objects.get(
+                source=from_identity, target=self.identity
+            ).note
+        except AccountNote.DoesNotExist:
+            return ""
+
+    def set_note(self, from_identity: Identity, comment: str) -> dict:
+        """
+        Sets a private note on this identity from from_identity.
+        Returns the updated Mastodon relationship dict.
+        """
+        AccountNote.objects.update_or_create(
+            source=from_identity,
+            target=self.identity,
+            defaults={"note": comment},
+        )
+        relationships = self.relationships(from_identity)
+        return self._build_relationship_json(relationships, from_identity)
+
+    def _build_relationship_json(
+        self, relationships: dict, from_identity: Identity | None = None
+    ) -> dict:
         return {
             "id": str(self.identity.pk),
             "following": (
@@ -301,11 +328,7 @@ class IdentityService:
             ),
             "domain_blocking": False,
             "endorsed": False,
-            "note": (
-                relationships["outbound_follow"]
-                and relationships["outbound_follow"].note
-                or ""
-            ),
+            "note": self._get_note(from_identity) if from_identity else "",
         }
 
     def set_summary(self, summary: str):

@@ -1,4 +1,4 @@
-import random
+import secrets
 import string
 
 from django.conf import settings
@@ -91,6 +91,6 @@ class PasswordReset(StatorModel):
     def create_for_user(cls, user):
         return cls.objects.create(
             user=user,
-            token="".join(random.choice(string.ascii_lowercase) for i in range(42)),
+            token="".join(secrets.choice(string.ascii_lowercase) for i in range(42)),
             new_account=not user.password,
         )

@@ -1,6 +1,8 @@
-from django.http import Http404, JsonResponse
+from django.conf import settings
+from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.utils.decorators import method_decorator
+from django.views import View
 from django.views.decorators.vary import vary_on_headers
 from django.views.generic import TemplateView
 
@@ -62,10 +64,64 @@ class Individual(TemplateView):
         return context
 
     def serve_object(self):
+        if settings.SETUP.NO_FEDERATION:
+            return HttpResponse(status=503)
         # If this not a local post, redirect to its canonical URI
         if not self.post_obj.local:
             return redirect(self.post_obj.object_uri)
         return JsonResponse(
             canonicalise(self.post_obj.to_ap(), include_security=True),
+            content_type="application/activity+json",
+        )
+
+
+class PostRepliesCollection(View):
+    """
+    ActivityPub replies collection for a post.
+    Returns public/unlisted replies as an AP Collection.
+    """
+
+    REPLIES_LIMIT = 50
+
+    def get(self, request, handle, post_id):
+        if settings.SETUP.NO_FEDERATION:
+            return HttpResponse(status=503)
+        identity = by_handle_or_404(request, handle, local=False)
+        if not identity.local:
+            raise Http404("Not a local identity")
+        post_obj = get_object_or_404(
+            Post.objects.filter(author=identity),
+            pk=post_id,
+        )
+        if not post_obj.local:
+            raise Http404("Not a local post")
+        if post_obj.state in [PostStates.deleted, PostStates.deleted_fanned_out]:
+            raise Http404("Deleted post")
+
+        replies_uri = post_obj.object_uri + "replies/"
+        reply_uris = list(
+            Post.objects.filter(
+                in_reply_to=post_obj.object_uri,
+                visibility__in=[
+                    Post.Visibilities.public,
+                    Post.Visibilities.unlisted,
+                ],
+            )
+            .not_hidden()
+            .order_by("published")
+            .values_list("object_uri", flat=True)[: self.REPLIES_LIMIT]
+        )
+        collection = {
+            "id": replies_uri,
+            "type": "Collection",
+            "totalItems": len(reply_uris),
+            "first": {
+                "type": "CollectionPage",
+                "partOf": replies_uri,
+                "items": reply_uris,
+            },
+        }
+        return JsonResponse(
+            canonicalise(collection),
             content_type="application/activity+json",
         )

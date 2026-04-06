@@ -1,8 +1,16 @@
+import base64
+import time
+
 import pytest
 from django.test.client import RequestFactory
 from pytest_httpx import HTTPXMock
 
-from core.signatures import HttpSignature, LDSignature, VerificationError
+from core.signatures import (
+    HttpSignature,
+    LDSignature,
+    VerificationError,
+    VerificationFormatError,
+)
 
 
 def test_sign_ld(keypair):
@@ -136,3 +144,139 @@ def test_verify_http_bad_signature(keypair):
         HttpSignature.verify_request(
             fake_request, keypair["public_key"], skip_date=True
         )
+
+
+def test_headers_from_request_missing_header_raises_format_error():
+    """
+    A header listed in the signature but absent from the request must raise
+    VerificationFormatError (400), not a bare KeyError (which would 500).
+    """
+    request = RequestFactory().post(
+        path="/inbox",
+        data=b"{}",
+        content_type="application/json",
+        HTTP_HOST="example.com",
+    )
+    # "x-missing-header" is not present in the request
+    with pytest.raises(VerificationFormatError):
+        HttpSignature.headers_from_request(request, ["host", "x-missing-header"])
+
+
+def test_headers_from_request_created_pseudo_header(keypair):
+    """
+    (created) pseudo-header is resolved from signature_params, not HTTP headers.
+    """
+    request = RequestFactory().post(
+        path="/inbox",
+        data=b"{}",
+        content_type="application/json",
+        HTTP_HOST="example.com",
+    )
+    params = {
+        "created": "1700000000",
+        "keyid": "k",
+        "algorithm": "hs2019",
+        "headers": ["(created)", "host"],
+        "signature": b"",
+    }
+    result = HttpSignature.headers_from_request(request, ["(created)", "host"], params)
+    assert "(created): 1700000000" in result
+    assert "host: example.com" in result
+
+
+def test_headers_from_request_created_missing_param_raises():
+    """
+    (created) in the headers list but no created param → VerificationFormatError.
+    """
+    request = RequestFactory().post(
+        "/inbox", data=b"{}", content_type="application/json"
+    )
+    with pytest.raises(VerificationFormatError, match="created"):
+        HttpSignature.headers_from_request(request, ["(created)"])
+
+
+def test_verify_request_hs2019_with_created(keypair):
+    """
+    A valid hs2019 signature that uses (created) instead of date verifies correctly.
+    """
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    created_ts = str(int(time.time()))
+    body = b'{"type": "Note"}'
+    digest = HttpSignature.calculate_digest(body)
+    signed_string = (
+        f"(request-target): post /inbox\n"
+        f"host: example.com\n"
+        f"(created): {created_ts}\n"
+        f"digest: {digest}"
+    )
+    private_key = serialization.load_pem_private_key(
+        keypair["private_key"].encode(), password=None
+    )
+    sig_bytes = private_key.sign(
+        signed_string.encode(), padding.PKCS1v15(), hashes.SHA256()
+    )
+    sig_b64 = base64.b64encode(sig_bytes).decode()
+
+    request = RequestFactory().post(
+        path="/inbox",
+        data=body,
+        content_type="application/json",
+        HTTP_HOST="example.com",
+        HTTP_DIGEST=digest,
+        HTTP_SIGNATURE=(
+            f'keyId="{keypair["public_key_id"]}",'
+            f'algorithm="hs2019",'
+            f'headers="(request-target) host (created) digest",'
+            f"created={created_ts},"
+            f'signature="{sig_b64}"'
+        ),
+    )
+    # Should verify without raising
+    HttpSignature.verify_request(request, keypair["public_key"])
+
+
+def test_verify_request_created_timestamp_too_old(keypair):
+    """
+    (created) timestamp outside the allowed window raises VerificationFormatError.
+    """
+    stale_ts = str(int(time.time()) - 600)  # 10 minutes ago
+
+    request = RequestFactory().post(
+        path="/inbox",
+        data=b"{}",
+        content_type="application/json",
+        HTTP_HOST="example.com",
+        HTTP_SIGNATURE=(
+            f'keyId="{keypair["public_key_id"]}",'
+            f'algorithm="hs2019",'
+            f'headers="host (created)",'
+            f"created={stale_ts},"
+            f'signature="{base64.b64encode(b"x").decode()}"'
+        ),
+    )
+    with pytest.raises(VerificationFormatError, match="too far away"):
+        HttpSignature.verify_request(request, keypair["public_key"])
+
+
+def test_verify_request_malformed_date_header(keypair):
+    """
+    A malformed Date header must raise VerificationFormatError (→ 400), not a
+    bare ValueError / OverflowError that would escape as a 500 server error.
+    """
+    request = RequestFactory().post(
+        path="/inbox",
+        data=b"{}",
+        content_type="application/json",
+        HTTP_HOST="example.com",
+        HTTP_DATE="not-a-real-date",
+        HTTP_SIGNATURE=(
+            f'keyId="{keypair["public_key_id"]}",'
+            f'algorithm="rsa-sha256",'
+            f'headers="host date",'
+            f'signature="{base64.b64encode(b"x").decode()}"'
+        ),
+    )
+    with pytest.raises(VerificationFormatError, match="Invalid Date header"):
+        HttpSignature.verify_request(request, keypair["public_key"])

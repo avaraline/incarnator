@@ -1,3 +1,5 @@
+import mimetypes
+
 from django.core.files import File
 from django.shortcuts import get_object_or_404
 from hatchway import ApiError, QueryOrBody, api_view
@@ -17,33 +19,52 @@ def upload_media(
     description: QueryOrBody[str] = "",
     focus: QueryOrBody[str] = "0,0",
 ) -> schemas.MediaAttachment:
-    main_file = resize_image(
-        file,
-        size=(2000, 2000),
-        cover=False,
-    )
-    thumbnail_file = resize_image(
-        file,
-        size=(400, 225),
-        cover=True,
-    )
-    attachment = PostAttachment.objects.create(
-        blurhash=blurhash_image(thumbnail_file),
-        mimetype="image/webp",
-        width=main_file.image.width,
-        height=main_file.image.height,
-        name=description or None,
-        state=PostAttachmentStates.fetched,
-        author=request.identity,
-    )
-    attachment.file.save(
-        main_file.name,
-        main_file,
-    )
-    attachment.thumbnail.save(
-        thumbnail_file.name,
-        thumbnail_file,
-    )
+    content_type = getattr(file, "content_type", "") or ""
+    if content_type.startswith("image/") or not content_type:
+        main_file = resize_image(
+            file,
+            size=(2000, 2000),
+            cover=False,
+        )
+        thumbnail_file = resize_image(
+            file,
+            size=(400, 225),
+            cover=True,
+        )
+        attachment = PostAttachment.objects.create(
+            blurhash=blurhash_image(thumbnail_file),
+            mimetype="image/webp",
+            width=main_file.image.width,
+            height=main_file.image.height,
+            name=description or None,
+            state=PostAttachmentStates.fetched,
+            author=request.identity,
+        )
+        attachment.file.save(
+            main_file.name,
+            main_file,
+        )
+        attachment.thumbnail.save(
+            thumbnail_file.name,
+            thumbnail_file,
+        )
+    else:
+        attachment = PostAttachment.objects.create(
+            mimetype=content_type,
+            name=description or None,
+            state=PostAttachmentStates.fetched,
+            author=request.identity,
+        )
+        # Ensure filename has a proper extension so the web server
+        # serves it with the correct Content-Type header.
+        filename = file.name or "attachment"
+        if "." not in filename.rsplit("/", 1)[-1]:
+            ext = mimetypes.guess_extension(content_type) or ""
+            filename = filename + ext
+        attachment.file.save(
+            filename,
+            file,
+        )
     attachment.save()
     return schemas.MediaAttachment.from_post_attachment(attachment)
 

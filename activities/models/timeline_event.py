@@ -3,6 +3,7 @@ from django.utils import timezone
 
 from api.models.push import PushType
 from core.ld import format_ld_date
+from users.models import Bookmark, Identity
 
 
 class TimelineEvent(models.Model):
@@ -19,6 +20,7 @@ class TimelineEvent(models.Model):
         followed = "followed"
         follow_requested = "follow_requested"
         boosted = "boosted"  # Someone boosting one of our posts
+        quoted = "quoted"  # Someone quoting one of our posts
         announcement = "announcement"  # Server announcement
         identity_created = "identity_created"  # New identity created
 
@@ -29,6 +31,7 @@ class TimelineEvent(models.Model):
         Types.mentioned: "mention",
         Types.followed: "follow",
         Types.follow_requested: "follow_request",
+        Types.quoted: "quote",
         Types.identity_created: "admin.sign_up",
     }
 
@@ -157,6 +160,22 @@ class TimelineEvent(models.Model):
         return event
 
     @classmethod
+    def add_quoted(cls, identity, post):
+        """
+        Adds a quote notification when someone quotes one of our posts
+        """
+        event, created = cls.objects.get_or_create(
+            identity=identity,
+            type=cls.Types.quoted,
+            subject_post=post,
+            subject_identity=post.author,
+            defaults={"published": post.published or post.created},
+        )
+        if created:
+            identity.notify(PushType.quote, post.author, body=post.content_preview())
+        return event
+
+    @classmethod
     def add_identity_created(cls, identity, new_identity):
         """
         Adds a new identity item
@@ -249,6 +268,11 @@ class TimelineEvent(models.Model):
         Internal stator handler for clearing all events by a user off another
         user's timeline.
         """
+        from activities.models.post_interaction import (
+            PostInteraction,
+            PostInteractionStates,
+        )
+
         actor_id = message["actor"]
         object_id = message["object"]
         full_erase = message.get("fullErase", False)
@@ -264,6 +288,27 @@ class TimelineEvent(models.Model):
                 type=cls.Types.post, subject_post__author_id=object_id
             ) | models.Q(type=cls.Types.boost, subject_identity_id=object_id)
         TimelineEvent.objects.filter(q, identity_id=actor_id).delete()
+        if full_erase:
+            Bookmark.objects.filter(
+                identity_id=actor_id, post__author_id=object_id
+            ).delete()
+            Bookmark.objects.filter(
+                identity_id=actor_id, post__author_id=object_id
+            ).delete()
+            PostInteraction.objects.filter(
+                identity=actor_id, post__author=object_id
+            ).update(state=PostInteractionStates.undone)
+            PostInteraction.objects.filter(
+                identity=object_id, post__author=actor_id
+            ).update(state=PostInteractionStates.undone)
+            actor = Identity.objects.filter(pk=actor_id).first()
+            if actor:
+                for post in actor.posts_mentioning.filter(author_id=object_id):
+                    post.mentions.remove(actor)
+                    parent = post.in_reply_to_post()
+                    if parent and parent.author_id == actor_id:
+                        # recalculate reply count
+                        parent.calculate_stats()
 
     ### Mastodon Client API ###
 
@@ -272,6 +317,7 @@ class TimelineEvent(models.Model):
             raise ValueError(f"Cannot convert {self.type} to notification JSON")
         result = {
             "id": str(self.pk),
+            "group_key": "ungrouped-" + str(self.pk),
             "created_at": format_ld_date(self.created),
             "account": self.subject_identity.to_mastodon_json(),
             "type": TimelineEvent.NOTIFICATION_NAMES[self.type],

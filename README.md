@@ -19,3 +19,9 @@ This fork has a number of changes/additions:
 * Trending hashtags and statuses
 * Fetch follow/post counts for non-local identities
 * Relay support
+* Conversations API
+* Report API
+* Quote posts (FEP-044f)
+* Group actor support
+* ActivityPub replies collection sync
+* Preview cards

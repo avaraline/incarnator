@@ -7,7 +7,6 @@ from typing import Annotated, Literal
 
 import dj_database_url
 import django_cache_url
-import httpx
 import sentry_sdk
 from corsheaders.defaults import default_headers
 from pydantic import (
@@ -18,7 +17,6 @@ from pydantic import (
 )
 from pydantic_core import Url
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
 from takahe import __version__
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -87,6 +85,9 @@ class Settings(BaseSettings):
 
     #: The default database.
     DATABASE_SERVER: ImplicitHostname | None = None
+
+    #: Disable Federation, not for production use
+    NO_FEDERATION: bool = False
 
     #: The currently running environment, used for things such as sentry
     #: error reporting.
@@ -177,6 +178,9 @@ class Settings(BaseSettings):
     # our database if nobody local has interacted with them.
     # Set to zero to disable.
     REMOTE_PRUNE_HORIZON: int = 90
+
+    # Remote posts older than this will not be pushed to timeline.
+    FANOUT_LIMIT_DAYS: int = 9
 
     # Stator tuning
     STATOR_CONCURRENCY: int = 20
@@ -347,9 +351,8 @@ STATOR_CONCURRENCY_PER_MODEL = SETUP.STATOR_CONCURRENCY_PER_MODEL
 
 ROBOTS_TXT_DISALLOWED_USER_AGENTS = SETUP.ROBOTS_TXT_DISALLOWED_USER_AGENTS
 
-CORS_ALLOW_ALL_ORIGINS = True  # Temporary
+CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOWED_ORIGINS = SETUP.CORS_HOSTS
-CORS_ALLOW_CREDENTIALS = True
 CORS_PREFLIGHT_MAX_AGE = 604800
 CORS_EXPOSE_HEADERS = ("link",)
 CORS_ALLOW_HEADERS = (*default_headers, "Idempotency-Key")
@@ -460,7 +463,9 @@ if SETUP.MEDIA_BACKEND:
             AWS_S3_ENDPOINT_URL = f"{s3_scheme}://{SETUP.MEDIA_BACKEND.host}:{port}"
         if SETUP.MEDIA_URL is not None:
             media_url_parsed = urllib.parse.urlparse(SETUP.MEDIA_URL)
-            AWS_S3_CUSTOM_DOMAIN = media_url_parsed.hostname
+            AWS_S3_CUSTOM_DOMAIN = (
+                media_url_parsed.hostname or ""
+            ) + media_url_parsed.path.rstrip("/")
     elif SETUP.MEDIA_BACKEND.scheme == "local":
         if not (MEDIA_ROOT and MEDIA_URL):
             raise ValueError(
@@ -480,10 +485,9 @@ CACHES = {
 if SETUP.ERROR_EMAILS:
     ADMINS = [("Admin", e) for e in SETUP.ERROR_EMAILS]
 
-TAKAHE_USER_AGENT = (
-    f"python-httpx/{httpx.__version__} "
-    f"(Takahe/{__version__}; +https://{SETUP.MAIN_DOMAIN}/)"
-)
+TAKAHE_USER_AGENT = f"Takahe/{__version__} (+https://{SETUP.MAIN_DOMAIN}/)"
+
+FANOUT_LIMIT_DAYS = SETUP.FANOUT_LIMIT_DAYS
 
 if SETUP.LOCAL_SETTINGS:
     # Let any errors bubble up

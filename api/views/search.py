@@ -38,7 +38,7 @@ def search(
         result["accounts"] = [
             schemas.Account.from_identity(i) for i in search_result["identities"]
         ]
-    if type is None or type == "hashtag":
+    if type is None or type == "hashtags":
         result["hashtags"] = schemas.Tag.map_from_hashtags(
             search_result["hashtags"], domain=request.domain, identity=request.identity
         )

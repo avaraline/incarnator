@@ -77,7 +77,9 @@ def get_accounts(request: HttpRequest, id: str) -> list[schemas.Account]:
 @api_view.post
 def add_accounts(request: HttpRequest, id: str) -> dict:
     alist = get_object_or_404(request.identity.lists, pk=id)
-    add_ids = request.PARAMS.get("account_ids")
+    add_ids = request.PARAMS.get("account_ids[]") or request.PARAMS.get("account_ids")
+    if not add_ids:
+        return {}
     for follow in request.identity.outbound_follows.filter(
         target__id__in=add_ids
     ).select_related("target"):
@@ -89,7 +91,11 @@ def add_accounts(request: HttpRequest, id: str) -> dict:
 @api_view.delete
 def delete_accounts(request: HttpRequest, id: str) -> dict:
     alist = get_object_or_404(request.identity.lists, pk=id)
-    remove_ids = request.PARAMS.get("account_ids")
+    remove_ids = request.PARAMS.get("account_ids[]") or request.PARAMS.get(
+        "account_ids"
+    )
+    if not remove_ids:
+        return {}
     for ident in alist.members.filter(id__in=remove_ids):
         alist.members.remove(ident)
     return {}

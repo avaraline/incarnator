@@ -70,7 +70,7 @@ def public(
     if remote:
         queryset = queryset.filter(local=False)
     if only_media:
-        queryset = queryset.filter(attachments__id__isnull=True)
+        queryset = queryset.filter(attachments__id__isnull=False)
     # Grab a paginated result set of instances
     paginator = MastodonPaginator()
     pager: PaginationResult[Post] = paginator.paginate(
@@ -105,7 +105,7 @@ def hashtag(
     if local:
         queryset = queryset.filter(local=True)
     if only_media:
-        queryset = queryset.filter(attachments__id__isnull=True)
+        queryset = queryset.filter(attachments__id__isnull=False)
     # Grab a paginated result set of instances
     paginator = MastodonPaginator()
     pager: PaginationResult[Post] = paginator.paginate(
@@ -120,19 +120,6 @@ def hashtag(
         request=request,
         include_params=["limit", "local", "remote", "only_media"],
     )
-
-
-@scope_required("read:conversations")
-@api_view.get
-def conversations(
-    request: HttpRequest,
-    max_id: str | None = None,
-    since_id: str | None = None,
-    min_id: str | None = None,
-    limit: int = 20,
-) -> list[schemas.Status]:
-    # We don't implement this yet
-    return []
 
 
 @scope_required("read:favourites")

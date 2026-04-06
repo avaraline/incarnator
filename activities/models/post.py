@@ -3,6 +3,7 @@ import html
 import json
 import logging
 import mimetypes
+import re
 import ssl
 from collections.abc import Iterable
 from typing import Optional
@@ -10,28 +11,8 @@ from urllib.parse import urlparse
 
 import httpx
 import urlman
-from django.conf import settings
-from django.contrib.postgres.indexes import GinIndex
-from django.contrib.postgres.search import SearchVector
-from django.db import models, transaction
-from django.db.models.signals import post_delete, post_save
-from django.db.utils import IntegrityError
-from django.template import loader
-from django.template.defaultfilters import linebreaks_filter
-from django.utils import timezone
-from django.utils.html import strip_tags
-from pyld.jsonld import JsonLdError
-
-from activities.models.emoji import Emoji
-from activities.models.fan_out import FanOut
-from activities.models.hashtag import Hashtag
-from activities.models.post_types import (
-    PostTypeData,
-    PostTypeDataDecoder,
-    PostTypeDataEncoder,
-    QuestionData,
-)
 from core.exceptions import ActivityPubFormatError
+from core.signatures import LDSignature
 from core.html import ContentRenderer, FediverseHtmlParser
 from core.json import json_from_response
 from core.ld import (
@@ -43,8 +24,20 @@ from core.ld import (
     parse_ld_date,
 )
 from core.snowflake import Snowflake
+from django.conf import settings
+from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.search import SearchVector
+from django.db import models, transaction
+from django.db.models.signals import post_delete, post_save
+from django.db.utils import IntegrityError
+from django.template import loader
+from django.template.defaultfilters import linebreaks_filter
+from django.utils import timezone
+from django.utils.html import strip_tags
+from pyld.jsonld import JsonLdError
 from stator.exceptions import TryAgainLater
 from stator.models import State, StateField, StateGraph, StatorModel
+from users.models.block import Block
 from users.models.follow import FollowStates
 from users.models.hashtags import HashtagFollow
 from users.models.identity import Identity, IdentityStates
@@ -52,7 +45,46 @@ from users.models.inbox_message import InboxMessage
 from users.models.relay import Relay
 from users.models.system_actor import SystemActor
 
+from activities.models.emoji import Emoji
+from activities.models.fan_out import FanOut
+from activities.models.hashtag import Hashtag
+from activities.models.post_types import (
+    PostTypeData,
+    PostTypeDataDecoder,
+    PostTypeDataEncoder,
+    QuestionData,
+)
+
 logger = logging.getLogger(__name__)
+
+
+def _attach_preview_card(post_pk: int, content: str) -> None:
+    """
+    Extracts the first URL from post HTML content, strips tracking params,
+    and links the post to a PreviewCard (creating one if needed).
+    If no URL is found, unlinks any existing card.
+    Uses direct queryset updates to avoid interfering with Stator state saves.
+    """
+    from django.utils import timezone
+
+    from activities.models.preview_card import PreviewCard
+
+    # Extract first URL from HTML content
+    matches = FediverseHtmlParser.URL_REGEX.findall(content or "")
+    url = matches[0].lstrip("(") if matches else None
+
+    if not url or not url.startswith(("http://", "https://")):
+        Post.objects.filter(pk=post_pk).update(preview_card=None)
+        return
+
+    canonical_url = PreviewCard.strip_tracking_params(url)
+    if not canonical_url.startswith(("http://", "https://")):
+        Post.objects.filter(pk=post_pk).update(preview_card=None)
+        return
+
+    card, _ = PreviewCard.objects.get_or_create(url=canonical_url)
+    PreviewCard.objects.filter(pk=card.pk).update(last_referenced_at=timezone.now())
+    Post.objects.filter(pk=post_pk).update(preview_card_id=card.pk)
 
 
 class PostStates(StateGraph):
@@ -102,6 +134,11 @@ class PostStates(StateGraph):
                 obj = canonicalise(post.to_delete_ap())
         if not obj:
             return
+        # Attach LD signature so relay recipients can verify the original author
+        # independently of the relay's HTTP signature.
+        obj["signature"] = LDSignature.create_signature(
+            obj, post.author.private_key, post.author.public_key_id
+        )
         for uri in relay_uris:
             try:
                 post.author.signed_request(method="post", uri=uri, body=obj)
@@ -116,10 +153,11 @@ class PostStates(StateGraph):
         # Only fan out if the post was published in the last day or it's local
         # (we don't want to fan out anything older that that which is remote)
         if instance.local or (timezone.now() - instance.published) < datetime.timedelta(
-            days=1
+            days=settings.FANOUT_LIMIT_DAYS
         ):
             cls.targets_fan_out(instance, FanOut.Types.post)
         instance.ensure_hashtags()
+        _attach_preview_card(instance.pk, instance.content)
         return cls.fanned_out
 
     @classmethod
@@ -147,9 +185,42 @@ class PostStates(StateGraph):
     @classmethod
     def handle_deleted(cls, instance: "Post"):
         """
-        Creates all needed fan-out objects needed to delete a Post.
+        When a post is deleted:
+        - Remove all timeline events
+        - Remove all bookmarks
+        - Undo all interactions (so that remote follower of a local booster will unsee it from their timeline)
+        - Fan out the deletion of local post (fanout of remote post deletion is not supported yet)
+        - Update conversation's last_post if needed
         """
-        cls.targets_fan_out(instance, FanOut.Types.post_deleted)
+        from users.models import Bookmark
+
+        from .post_interaction import PostInteraction, PostInteractionStates
+        from .timeline_event import TimelineEvent
+
+        TimelineEvent.objects.filter(subject_post=instance).delete()
+        Bookmark.objects.filter(post=instance).delete()
+        if instance.local:
+            cls.targets_fan_out(instance, FanOut.Types.post_deleted)
+        PostInteraction.transition_perform_queryset(
+            PostInteraction.objects.filter(
+                post=instance,
+                state__in=PostInteractionStates.group_active(),
+            ),
+            PostInteractionStates.undone,
+        )
+        # Update conversation's last_post if this was the latest
+        if instance.conversation_id:
+            conv = instance.conversation
+            if conv.last_post_id == instance.pk:
+                next_post = (
+                    Post.objects.filter(conversation=conv)
+                    .exclude(pk=instance.pk)
+                    .not_hidden()
+                    .order_by("-id")
+                    .first()
+                )
+                conv.last_post = next_post
+                conv.save(update_fields=["last_post", "updated"])
         return cls.deleted_fanned_out
 
     @classmethod
@@ -159,6 +230,7 @@ class PostStates(StateGraph):
         """
         cls.targets_fan_out(instance, FanOut.Types.post_edited)
         instance.ensure_hashtags()
+        _attach_preview_card(instance.pk, instance.content)
         return cls.edited_fanned_out
 
 
@@ -204,7 +276,12 @@ class PostQuerySet(models.QuerySet):
             return query.filter(in_reply_to__isnull=True)
         return query
 
-    def visible_to(self, identity: Identity | None, include_replies: bool = False):
+    def visible_to(
+        self,
+        identity: Identity | None,
+        include_replies: bool = False,
+        include_muted: bool = False,
+    ):
         if identity is None:
             return self.unlisted(include_replies=include_replies)
         # It's way faster to check follows and mentioned in subselects and drop the
@@ -237,7 +314,22 @@ class PostQuerySet(models.QuerySet):
             | models.Q(author=identity)
         )
         if not include_replies:
-            return query.filter(in_reply_to__isnull=True)
+            query = query.filter(in_reply_to__isnull=True)
+        if identity:
+            params = {"source_id": identity.pk}
+            if include_muted:
+                params["mute"] = False
+            rejecting_ids = list(
+                Block.objects.active().filter(**params).values_list("target", flat=True)
+            ) + list(
+                Block.objects.active()
+                .filter(
+                    target_id=identity.pk,
+                    mute=False,
+                )
+                .values_list("source", flat=True)
+            )
+            query = query.exclude(author_id__in=rejecting_ids)
         return query
 
     def tagged_with(self, hashtag: str | Hashtag):
@@ -311,6 +403,15 @@ class Post(StatorModel):
         related_name="posts",
     )
 
+    # Preview card for the first URL in this post's content
+    preview_card = models.ForeignKey(
+        "activities.PreviewCard",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="posts",
+    )
+
     # The state the post is in
     state = StateField(PostStates)
 
@@ -352,6 +453,18 @@ class Post(StatorModel):
     # The Post it is replying to as an AP ID URI
     # (as otherwise we'd have to pull entire threads to use IDs)
     in_reply_to = models.CharField(max_length=500, blank=True, null=True, db_index=True)
+
+    # The Post this quotes, as an AP URI (FEP-044f)
+    quote_url = models.CharField(max_length=2048, blank=True, null=True, db_index=True)
+
+    # The conversation this post belongs to (only for direct messages)
+    conversation = models.ForeignKey(
+        "activities.Conversation",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="posts",
+    )
 
     # The identities the post is directly to (who can see it if not public)
     to = models.ManyToManyField(
@@ -514,7 +627,7 @@ class Post(StatorModel):
         """
         if not self.summary:
             return ""
-        return "summary-{self.id}"
+        return f"summary-{self.id}"
 
     def content_preview(self, length=80):
         preview = html.unescape(strip_tags(self.content))[: length + 1]
@@ -544,6 +657,7 @@ class Post(StatorModel):
         sensitive: bool = False,
         visibility: int = Visibilities.public,
         reply_to: Optional["Post"] = None,
+        quote: Optional["Post"] = None,
         attachments: list | None = None,
         question: dict | None = None,
         language: str | None = None,
@@ -561,7 +675,6 @@ class Post(StatorModel):
             emojis = Emoji.emojis_from_content(content, None)
             # Strip all unwanted HTML and apply linebreaks filter, grabbing hashtags on the way
             parser = FediverseHtmlParser(linebreaks_filter(content), find_hashtags=True)
-            content = parser.html
             hashtags = (
                 sorted([tag[: Hashtag.MAXIMUM_LENGTH] for tag in parser.hashtags])
                 or None
@@ -572,13 +685,14 @@ class Post(StatorModel):
             # Make the Post object
             post = cls.objects.create(
                 author=author,
-                content=content,
+                content=parser.html,
                 summary=summary or None,
                 sensitive=bool(summary) or sensitive,
                 local=True,
                 visibility=visibility,
                 hashtags=hashtags,
                 in_reply_to=reply_to.object_uri if reply_to else None,
+                quote_url=quote.object_uri if quote else None,
                 language=language,
                 application=application,
             )
@@ -592,6 +706,11 @@ class Post(StatorModel):
                 post.type = question["type"]
                 post.type_data = PostTypeData(root=question).root
             post.save()
+            # Assign to conversation if this is a direct message
+            if visibility == cls.Visibilities.mentioned:
+                from activities.models.conversation import Conversation
+
+                Conversation.update_for_post(post)
             # Recalculate parent stats for replies
             if reply_to:
                 reply_to.calculate_stats()
@@ -652,7 +771,13 @@ class Post(StatorModel):
                 domain=domain,
                 fetch=True,
             )
-            if identity is not None and not identity.deleted:
+            if (
+                identity is not None
+                and not identity.deleted
+                and not Block.maybe_get(
+                    source=identity, target=author, require_active=True
+                )
+            ):
                 mentions.add(identity)
         return mentions
 
@@ -681,7 +806,11 @@ class Post(StatorModel):
                 type=PostInteraction.Types.boost,
                 state__in=PostInteractionStates.group_active(),
             ).count(),
-            "replies": Post.objects.filter(in_reply_to=self.object_uri).count(),
+            # only count replies visible to post's author
+            "replies": Post.objects.filter(in_reply_to=self.object_uri)
+            .not_hidden()
+            .visible_to(self.author, True)
+            .count(),
         }
         if save:
             self.save()
@@ -750,6 +879,32 @@ class Post(StatorModel):
             value["summary"] = self.summary
         if self.in_reply_to:
             value["inReplyTo"] = self.in_reply_to
+        if self.quote_url:
+            value["quote"] = self.quote_url
+            value["quoteUrl"] = self.quote_url
+            value["quoteUri"] = self.quote_url
+            value["_misskey_quote"] = self.quote_url
+            value["tag"].append(
+                {
+                    "type": "Link",
+                    "mediaType": (
+                        "application/ld+json;"
+                        ' profile="https://www.w3.org/'
+                        'ns/activitystreams"'
+                    ),
+                    "href": self.quote_url,
+                }
+            )
+        # Interaction policy: allow quoting of public/unlisted posts
+        if self.visibility in (
+            self.Visibilities.public,
+            self.Visibilities.unlisted,
+        ):
+            value["interactionPolicy"] = {
+                "canQuote": {
+                    "automaticApproval": ["as:Public"],
+                }
+            }
         if self.edited:
             value["updated"] = format_ld_date(self.edited)
         # Targeting
@@ -780,6 +935,31 @@ class Post(StatorModel):
         # Attachments
         for attachment in self.attachments.all():
             value["attachment"].append(attachment.to_ap())
+        # Replies collection (only for local posts with a URI)
+        if self.local and self.object_uri:
+            replies_uri = self.object_uri + "replies/"
+            replies_count = self.stats.get("replies", 0) if self.stats else 0
+            value["replies"] = {
+                "id": replies_uri,
+                "type": "Collection",
+                "totalItems": replies_count,
+                "first": {
+                    "type": "CollectionPage",
+                    "partOf": replies_uri,
+                    "items": list(
+                        Post.objects.filter(
+                            in_reply_to=self.object_uri,
+                            visibility__in=[
+                                Post.Visibilities.public,
+                                Post.Visibilities.unlisted,
+                            ],
+                        )
+                        .not_hidden()
+                        .order_by("published")
+                        .values_list("object_uri", flat=True)[:50]
+                    ),
+                },
+            }
         # Remove fields if they're empty
         for field in ["to", "cc", "tag", "attachment"]:
             if not value[field]:
@@ -847,11 +1027,24 @@ class Post(StatorModel):
                     targets.add(follow.identity)
         # Then, if it's not mentions only, also deliver to followers
         if self.visibility != Post.Visibilities.mentioned:
-            for follower in self.author.inbound_follows.filter(
-                state__in=FollowStates.group_active()
-            ).select_related("source"):
+            for follower in (
+                self.author.inbound_follows.filter(
+                    state__in=FollowStates.group_active()
+                )
+                .exclude(source__state=IdentityStates.connection_issue)
+                .select_related("source")
+            ):
                 targets.add(follower.source)
 
+        # If it quotes a post, include the quoted post's author
+        if self.quote_url:
+            quoted_post = (
+                Post.objects.filter(object_uri=self.quote_url)
+                .select_related("author")
+                .first()
+            )
+            if quoted_post:
+                targets.add(quoted_post.author)
         # If it's a reply, always include the original author if we know them
         reply_post = self.in_reply_to_post()
         if reply_post:
@@ -908,6 +1101,10 @@ class Post(StatorModel):
         or it's from a blocked domain.
         """
         try:
+            # Normalize attributedTo from object to URI string
+            # (per ActivityStreams spec, attributedTo can be an object or a URI)
+            if isinstance(data.get("attributedTo"), dict):
+                data["attributedTo"] = data["attributedTo"]["id"]
             # Ensure data has the primary fields of all Posts
             if (
                 not isinstance(data["id"], str)
@@ -982,9 +1179,45 @@ class Post(StatorModel):
                 post.content = post.summary
                 post.summary = None
             post.sensitive = data.get("sensitive", False)
-            post.published = parse_ld_date(data.get("published"))
+            post.published = parse_ld_date(data.get("published")) or timezone.now()
             post.edited = parse_ld_date(data.get("updated"))
-            post.in_reply_to = data.get("inReplyTo")
+            in_reply_to = data.get("inReplyTo")
+            if isinstance(in_reply_to, dict):
+                in_reply_to = in_reply_to.get("id")
+            post.in_reply_to = in_reply_to
+            # Quote URL - check properties in priority order (FEP-044f)
+            post.quote_url = None
+            for key in ("quote", "_misskey_quote", "quoteUrl", "quoteUri"):
+                val = data.get(key)
+                if isinstance(val, str) and val:
+                    post.quote_url = val
+                    break
+                elif isinstance(val, dict):
+                    if val.get("type") == "Tombstone":
+                        break
+                    uri = val.get("id")
+                    if uri:
+                        post.quote_url = uri
+                    break
+            # FEP-e232 tag Link fallback
+            if not post.quote_url:
+                for tag in get_list(data, "tag"):
+                    if (
+                        tag.get("type") == "Link"
+                        and isinstance(tag.get("mediaType"), str)
+                        and tag["mediaType"].startswith("application/ld+json")
+                        and tag.get("href")
+                    ):
+                        post.quote_url = tag["href"]
+                        break
+            # Strip FEP-044f fallback quote-inline span from content
+            if post.quote_url:
+                post.content = re.sub(
+                    r'<span class="quote-inline">.*?</span>',
+                    "",
+                    post.content,
+                    flags=re.DOTALL,
+                )
             post.language = get_language(data) or ""
             # Mentions and hashtags
             post.hashtags = []
@@ -1003,8 +1236,11 @@ class Post(StatorModel):
                         name.lower().lstrip("#")[: Hashtag.MAXIMUM_LENGTH]
                     )
                 elif tag_type in ["toot:emoji", "emoji"]:
-                    emoji = Emoji.by_ap_tag(post.author.domain, tag, create=True)
-                    post.emojis.add(emoji)
+                    try:
+                        emoji = Emoji.by_ap_tag(post.author.domain, tag, create=True)
+                        post.emojis.add(emoji)
+                    except (KeyError, ValueError):
+                        pass
                 else:
                     # Various ActivityPub implementations and proposals introduced tag
                     # types, e.g. Edition in Bookwyrm and Link in fep-e232 Object Links
@@ -1062,14 +1298,25 @@ class Post(StatorModel):
                 # the parent fetch below goes into an infinite loop
                 post.save()
 
+            # Assign to conversation if this is a direct message
+            if post.visibility == Post.Visibilities.mentioned:
+                from activities.models.conversation import Conversation
+
+                Conversation.update_for_post(post)
+
             # Potentially schedule a fetch of the reply parent, and recalculate
             # its stats if it's here already.
             if post.in_reply_to:
+                depth = data.get("_fetch_depth", 0)
                 try:
                     parent = cls.by_object_uri(post.in_reply_to)
                 except cls.DoesNotExist:
                     try:
-                        cls.ensure_object_uri(post.in_reply_to, reason=post.object_uri)
+                        cls.ensure_object_uri(
+                            post.in_reply_to,
+                            reason=post.object_uri,
+                            depth=depth + 1,
+                        )
                     except ValueError:
                         logger.warning(
                             "Cannot fetch ancestor of Post=%s, ancestor_uri=%s",
@@ -1078,10 +1325,28 @@ class Post(StatorModel):
                         )
                 else:
                     parent.calculate_stats()
+            # If the post has a replies collection, queue a fetch of the replies
+            replies = data.get("replies")
+            if replies and not post.local:
+                replies_uri = None
+                if isinstance(replies, str):
+                    replies_uri = replies
+                elif isinstance(replies, dict):
+                    replies_uri = replies.get("id")
+                if replies_uri and "://" in replies_uri:
+                    InboxMessage.create_internal(
+                        {
+                            "type": "FetchReplies",
+                            "object": replies_uri,
+                            "post_uri": post.object_uri,
+                        }
+                    )
         return post
 
     @classmethod
-    def by_object_uri(cls, object_uri, fetch=False, fetch_as=None) -> "Post":
+    def by_object_uri(
+        cls, object_uri, fetch=False, fetch_as=None, fetch_depth: int = 0
+    ) -> "Post":
         """
         Gets the post by URI - either looking up locally, or fetching
         from the other end if it's not here.
@@ -1107,8 +1372,12 @@ class Post(StatorModel):
                     )
                 try:
                     json_data = json_from_response(response)
+                    ap_data = canonicalise(
+                        json_data, include_security=True, outbound=False
+                    )
+                    ap_data["_fetch_depth"] = fetch_depth
                     post = cls.by_ap(
-                        canonicalise(json_data, include_security=True),
+                        ap_data,
                         create=True,
                         update=True,
                         fetch_author=True,
@@ -1124,14 +1393,26 @@ class Post(StatorModel):
             else:
                 raise cls.DoesNotExist(f"Cannot find Post with URI {object_uri}")
 
+    MAX_ANCESTOR_FETCH_DEPTH = 20
+
     @classmethod
-    def ensure_object_uri(cls, object_uri: str, reason: str | None = None):
+    def ensure_object_uri(
+        cls, object_uri: str, reason: str | None = None, depth: int = 0
+    ):
         """
         Sees if the post is in our local set, and if not, schedules a fetch
-        for it (in the background)
+        for it (in the background). Depth limits recursive ancestor fetching.
         """
         if not object_uri or "://" not in object_uri:
             raise ValueError("URI missing or invalid")
+        if depth >= cls.MAX_ANCESTOR_FETCH_DEPTH:
+            logger.info(
+                "Skipping fetch of %s: depth %d exceeds limit %d",
+                object_uri,
+                depth,
+                cls.MAX_ANCESTOR_FETCH_DEPTH,
+            )
+            return
         try:
             cls.by_object_uri(object_uri)
         except cls.DoesNotExist:
@@ -1140,6 +1421,7 @@ class Post(StatorModel):
                     "type": "FetchPost",
                     "object": object_uri,
                     "reason": reason,
+                    "depth": depth,
                 }
             )
 
@@ -1148,12 +1430,22 @@ class Post(StatorModel):
         """
         Handles an incoming create request
         """
+        from . import TimelineEvent
+
         with transaction.atomic():
             # Ensure the Create actor is the Post's attributedTo
-            if data["actor"] != data["object"]["attributedTo"]:
+            attributedTo = data["object"]["attributedTo"]
+            if isinstance(attributedTo, dict):
+                attributedTo = attributedTo["id"]
+            if data["actor"] != attributedTo:
                 raise ValueError("Create actor does not match its Post object", data)
             # Create it, stator will fan it out locally
-            cls.by_ap(data["object"], create=True, update=True, fetch_author=True)
+            post = cls.by_ap(
+                data["object"], create=True, update=True, fetch_author=True
+            )
+            if post.author and post.author.actor_type == "group":
+                # for remote group, save it in this actor's timeline so we can show later
+                TimelineEvent.add_post(post.author, post)
 
     @classmethod
     def handle_update_ap(cls, data):
@@ -1162,7 +1454,10 @@ class Post(StatorModel):
         """
         with transaction.atomic():
             # Ensure the Create actor is the Post's attributedTo
-            if data["actor"] != data["object"]["attributedTo"]:
+            attributedTo = data["object"]["attributedTo"]
+            if isinstance(attributedTo, dict):
+                attributedTo = attributedTo["id"]
+            if data["actor"] != attributedTo:
                 raise ValueError("Create actor does not match its Post object", data)
             # Find it and update it
             try:
@@ -1194,16 +1489,155 @@ class Post(StatorModel):
             post.delete()
 
     @classmethod
+    def handle_quote_request_ap(cls, data):
+        """
+        Handles an incoming QuoteRequest (FEP-044f).
+        Auto-accepts for public/unlisted posts, rejects otherwise.
+        """
+        actor_uri = data.get("actor")
+        object_uri = data.get("object")
+        if not actor_uri or not object_uri:
+            return
+        if isinstance(object_uri, dict):
+            object_uri = object_uri.get("id")
+        if not object_uri:
+            return
+        try:
+            post = cls.by_object_uri(object_uri)
+        except cls.DoesNotExist:
+            return
+        if not post.local:
+            return
+        requesting_identity = Identity.by_actor_uri(actor_uri)
+        if not requesting_identity:
+            return
+        quoting_post_uri = None
+        instrument = data.get("instrument")
+        if isinstance(instrument, dict):
+            quoting_post_uri = instrument.get("id")
+        elif isinstance(instrument, str):
+            quoting_post_uri = instrument
+        if post.visibility in (
+            cls.Visibilities.public,
+            cls.Visibilities.unlisted,
+        ):
+            auth_id = Snowflake.generate_post()
+            authorization_uri = f"{post.object_uri}#quote-auth-{auth_id}"
+            accept_id = Snowflake.generate_post()
+            accept_data = {
+                "type": "Accept",
+                "id": f"{post.author.actor_uri}#accept-{accept_id}",
+                "actor": post.author.actor_uri,
+                "object": data.get("id", actor_uri),
+                "result": {
+                    "type": "QuoteAuthorization",
+                    "id": authorization_uri,
+                    "attributedTo": post.author.actor_uri,
+                    "interactingObject": quoting_post_uri or actor_uri,
+                    "interactionTarget": post.object_uri,
+                },
+            }
+            try:
+                post.author.signed_request(
+                    method="post",
+                    uri=requesting_identity.inbox_uri,
+                    body=canonicalise(accept_data),
+                )
+            except Exception as e:
+                logger.warning("Error sending QuoteAuthorization: %s", e)
+        else:
+            reject_id = Snowflake.generate_post()
+            reject_data = {
+                "type": "Reject",
+                "id": f"{post.author.actor_uri}#reject-{reject_id}",
+                "actor": post.author.actor_uri,
+                "object": data.get("id", actor_uri),
+            }
+            try:
+                post.author.signed_request(
+                    method="post",
+                    uri=requesting_identity.inbox_uri,
+                    body=canonicalise(reject_data),
+                )
+            except Exception as e:
+                logger.warning("Error sending quote Reject: %s", e)
+
+    @classmethod
     def handle_fetch_internal(cls, data):
         """
-        Handles an internal fetch-request inbox message
+        Handles an internal fetch-request inbox message.
+        Passes depth through to by_object_uri so ancestor fetching is bounded.
         """
         try:
             uri = data["object"]
+            depth = data.get("depth", 0)
             if "://" in uri:
-                cls.by_object_uri(uri, fetch=True)
+                cls.by_object_uri(uri, fetch=True, fetch_depth=depth)
         except (cls.DoesNotExist, KeyError):
             pass
+
+    MAX_FETCH_REPLIES = 50
+
+    @classmethod
+    def handle_fetch_replies(cls, data):
+        """
+        Fetches a remote replies collection and queues FetchPost for each
+        reply URI not already in the local database.
+        """
+        replies_uri = data.get("object")
+        if not replies_uri or "://" not in replies_uri:
+            return
+
+        try:
+            response = SystemActor().signed_request(method="get", uri=replies_uri)
+        except (httpx.HTTPError, ssl.SSLCertVerificationError, ValueError):
+            logger.warning("Failed to fetch replies collection: %s", replies_uri)
+            return
+
+        if response.status_code >= 400:
+            logger.warning(
+                "Error fetching replies collection %s: %d",
+                replies_uri,
+                response.status_code,
+            )
+            return
+
+        try:
+            collection = json_from_response(response)
+        except (ValueError, KeyError):
+            logger.warning("Invalid JSON from replies collection: %s", replies_uri)
+            return
+
+        # Extract items from the first page of the Collection
+        items: list = []
+        first = collection.get("first")
+        if isinstance(first, dict):
+            items = first.get("items") or first.get("orderedItems") or []
+        elif isinstance(first, str):
+            # first is a URL; for simplicity, fall back to top-level items
+            items = collection.get("items") or collection.get("orderedItems") or []
+        else:
+            items = collection.get("items") or collection.get("orderedItems") or []
+
+        # Queue a FetchPost for each URI we don't already have
+        count = 0
+        for item in items:
+            if count >= cls.MAX_FETCH_REPLIES:
+                break
+            uri = (
+                item
+                if isinstance(item, str)
+                else item.get("id")
+                if isinstance(item, dict)
+                else None
+            )
+            if not uri or "://" not in uri:
+                continue
+            try:
+                cls.ensure_object_uri(uri, reason=data.get("post_uri"))
+                count += 1
+            except ValueError:
+                continue
 
     ### OpenGraph API ###
 
@@ -1225,6 +1659,7 @@ class Post(StatorModel):
 
     def to_mastodon_json(self, interactions=None, bookmarks=None, identity=None):
         reply_parent = None
+        domain = identity.domain.uri_domain if identity else settings.MAIN_DOMAIN
         if self.in_reply_to:
             # Load the PK and author.id explicitly to prevent a SELECT on the entire author Identity
             reply_parent = (
@@ -1262,7 +1697,7 @@ class Post(StatorModel):
                 [
                     {
                         "name": tag,
-                        "url": f"https://{self.author.domain.uri_domain}/tags/{tag}/",
+                        "url": f"https://{domain}/tags/{tag}/",
                     }
                     for tag in self.hashtags
                 ]
@@ -1285,16 +1720,34 @@ class Post(StatorModel):
                 str(reply_parent.author_id) if reply_parent else None
             ),
             "reblog": None,
+            "quote": None,
             "poll": self.type_data.to_mastodon_json(self, identity)
             if isinstance(self.type_data, QuestionData)
             else None,
-            "card": None,
+            "card": (
+                self.preview_card.to_mastodon_json()
+                if self.preview_card_id and self.preview_card.state == "fetched"
+                else None
+            ),
             "text": self.safe_content_remote(),
             "edited_at": format_ld_date(self.edited) if self.edited else None,
             "application": self.application.to_mastodon_status_json()
             if self.application
             else None,
         }
+        if self.quote_url:
+            quoted_post = (
+                Post.objects.filter(object_uri=self.quote_url)
+                .select_related("author")
+                .first()
+            )
+            if quoted_post:
+                value["quote"] = {
+                    "state": "accepted",
+                    "quoted_status": quoted_post.to_mastodon_json(identity=identity),
+                }
+                value["quote_id"] = str(quoted_post.pk)
+                value["quoted_status_id"] = str(quoted_post.pk)
         if interactions:
             value["favourited"] = self.pk in interactions.get("like", [])
             value["reblogged"] = self.pk in interactions.get("boost", [])

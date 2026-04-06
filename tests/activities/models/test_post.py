@@ -374,6 +374,34 @@ def test_content_map_question(remote_identity: Identity):
 
 
 @pytest.mark.django_db
+def test_by_ap_attributed_to_object(remote_identity):
+    """
+    Tests that by_ap handles attributedTo as a full Actor object (dict)
+    instead of a plain URI string, as sent by Ghost and other AP implementations.
+    """
+    post = Post.by_ap(
+        data={
+            "id": "https://remote.test/posts/ghost-1/",
+            "type": "Article",
+            "content": "Hello from Ghost",
+            "attributedTo": {
+                "id": "https://remote.test/test-actor/",
+                "type": "Person",
+                "name": "Test Actor",
+                "icon": {
+                    "type": "Image",
+                    "url": "https://remote.test/avatar.png",
+                },
+            },
+            "published": "2024-01-15T12:00:00Z",
+        },
+        create=True,
+    )
+    assert post.content == "Hello from Ghost"
+    assert post.author.actor_uri == "https://remote.test/test-actor/"
+
+
+@pytest.mark.django_db
 @pytest.mark.parametrize("delete_type", ["note", "tombstone", "ref"])
 def test_inbound_posts(
     remote_identity: Identity,

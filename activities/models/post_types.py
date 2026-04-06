@@ -18,6 +18,8 @@ class QuestionOption(BaseModel):
     votes: int = 0
 
     def __init__(self, **data) -> None:
+        if "name" not in data:
+            data["name"] = list((data.get("nameMap", {}) or {"": ""}).values())[0]
         data["votes"] = data.get("votes", data.get("replies", {}).get("totalItems", 0))
         super().__init__(**data)
 
@@ -116,6 +118,6 @@ class PostTypeDataEncoder(json.JSONEncoder):
 class PostTypeDataDecoder(json.JSONDecoder):
     def decode(self, *args, **kwargs):
         s = super().decode(*args, **kwargs)
-        if isinstance(s, dict):
+        if isinstance(s, dict) and "type" in s:
             return PostTypeData.model_validate(s).root
         return s

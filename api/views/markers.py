@@ -21,10 +21,16 @@ def markers(request: HttpRequest) -> dict[str, schemas.Marker]:
 @api_view.post
 def set_markers(request: HttpRequest) -> dict[str, schemas.Marker]:
     markers = {}
-    for key, last_id in request.PARAMS.items():
-        if not key.endswith("[last_read_id]"):
-            continue
-        timeline = key.replace("[last_read_id]", "")
+    # Build a flat {timeline: last_read_id} dict from either format:
+    # - nested JSON: {"notifications": {"last_read_id": "123"}}
+    # - bracket form params: notifications[last_read_id]=123
+    timeline_ids: dict[str, str] = {}
+    for key, value in request.PARAMS.items():
+        if isinstance(value, dict) and "last_read_id" in value:
+            timeline_ids[key] = value["last_read_id"]
+        elif isinstance(value, str) and key.endswith("[last_read_id]"):
+            timeline_ids[key.replace("[last_read_id]", "")] = value
+    for timeline, last_id in timeline_ids.items():
         marker, created = request.identity.markers.get_or_create(
             timeline=timeline,
             defaults={

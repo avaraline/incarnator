@@ -6,6 +6,7 @@ authors = [
     { name = "Dan Watson", email = "dcwatson@gmail.com" }
 ]
 dependencies = [
+    "blurhash-python>=1.2.2",
     "cachetools>=5.3.3",
     "cryptography>=42.0.5",
     "dj-database-url>=2.1.0",
@@ -23,7 +24,7 @@ dependencies = [
     "pycountry>=23.12.11",
     "pydantic-settings>=2.2.1",
     "pydantic[email]>=2.7.1",
-    "pyld>=2.0.4",
+    "pyld>=3.0.0",
     "pymemcache>=4.0.0",
     "python-dateutil>=2.9.0.post0",
     "redis>=5.0.4",
@@ -32,7 +33,6 @@ dependencies = [
     "uvicorn>=0.29.0",
     "whitenoise>=6.6.0",
     "pywebpush>=2.0.0",
-    "blurhash-python==1.2.2",
 ]
 readme = "README.md"
 requires-python = ">= 3.11"

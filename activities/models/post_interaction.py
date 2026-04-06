@@ -6,10 +6,11 @@ from django.utils import timezone
 from activities.models.fan_out import FanOut
 from activities.models.post import Post
 from activities.models.post_types import QuestionData
+from activities.models.timeline_event import TimelineEvent
 from core.ld import format_ld_date, get_str_or_id, parse_ld_date
 from core.snowflake import Snowflake
 from stator.models import State, StateField, StateGraph, StatorModel
-from users.models.identity import Identity
+from users.models import Identity, Block
 
 
 class PostInteractionStates(StateGraph):
@@ -21,6 +22,7 @@ class PostInteractionStates(StateGraph):
     new.transitions_to(fanned_out)
     fanned_out.transitions_to(undone)
     undone.transitions_to(undone_fanned_out)
+    new.transitions_to(undone_fanned_out)
 
     @classmethod
     def group_active(cls):
@@ -34,6 +36,25 @@ class PostInteractionStates(StateGraph):
         # Boost: send a copy to all people who follow this user (limiting
         # to just local follows if it's a remote boost)
         # Pin: send Add activity to all people who follow this user
+
+        # Discard if blocked
+        if Block.maybe_get(
+            source=instance.post.author_id,
+            target=instance.identity_id,
+            require_active=True,
+        ):
+            return cls.undone_fanned_out
+        # Boost: add TimelineEvent for local booster and remote group
+        if instance.type == PostInteraction.Types.boost and (
+            instance.identity.local or instance.identity.actor_type == "group"
+        ):
+            TimelineEvent.objects.create(
+                identity=instance.identity,
+                type=TimelineEvent.Types.boost,
+                subject_identity=instance.identity,
+                subject_post=instance.post,
+                subject_post_interaction=instance,
+            )
         if instance.type == instance.Types.boost or instance.type == instance.Types.pin:
             for target in instance.get_targets():
                 FanOut.objects.create(
@@ -45,7 +66,9 @@ class PostInteractionStates(StateGraph):
         # Like: send a copy to the original post author only,
         # if the liker is local or they are
         elif instance.type == instance.Types.like:
-            if instance.identity.local or instance.post.local:
+            if (
+                instance.identity.local or instance.post.local
+            ) and instance.identity_id != instance.post.author_id:
                 FanOut.objects.create(
                     type=FanOut.Types.interaction,
                     identity_id=instance.post.author_id,
@@ -65,14 +88,6 @@ class PostInteractionStates(StateGraph):
                 )
         else:
             raise ValueError("Cannot fan out unknown type")
-        # And one for themselves if they're local and it's a boost
-        if instance.type == PostInteraction.Types.boost and instance.identity.local:
-            FanOut.objects.create(
-                identity_id=instance.identity_id,
-                type=FanOut.Types.interaction,
-                subject_post=instance.post,
-                subject_post_interaction=instance,
-            )
         return cls.fanned_out
 
     @classmethod
@@ -233,7 +248,8 @@ class PostInteraction(StatorModel):
             if target.local:
                 # Local targets always gets the boosts
                 # despite its creator locality
-                deduped_targets.add(target)
+                if target != self.identity:
+                    deduped_targets.add(target)
             elif self.identity.local:
                 # Dedupe the targets based on shared inboxes
                 # (we only keep one per shared inbox)
@@ -250,6 +266,15 @@ class PostInteraction(StatorModel):
     @classmethod
     def create_votes(cls, post, identity, choices) -> list["PostInteraction"]:
         question = post.type_data
+        if (
+            Block.objects.filter(
+                source=post.author, target=identity, mute=False
+            ).exists()
+            or Block.objects.filter(
+                source=identity, target=post.author, mute=False
+            ).exists()
+        ):
+            raise ValueError("Validation failed: blocked")
 
         if question.end_time and timezone.now() > question.end_time:
             raise ValueError("Validation failed: The poll has already ended")
@@ -298,6 +323,8 @@ class PostInteraction(StatorModel):
                 "object": self.post.object_uri,
                 "to": "as:Public",
             }
+            if self.identity.is_group and self.identity.followers_uri:
+                value["cc"] = [self.identity.followers_uri]
         elif self.type == self.Types.like:
             value = {
                 "type": "Like",
@@ -350,6 +377,7 @@ class PostInteraction(StatorModel):
         Returns the AP JSON to add a pin interaction to the featured collection
         """
         return {
+            "id": f"{self.identity.actor_uri}collections/featured/#add/post/{self.post.pk}",
             "type": "Add",
             "actor": self.identity.actor_uri,
             "object": self.post.object_uri,
@@ -361,6 +389,7 @@ class PostInteraction(StatorModel):
         Returns the AP JSON to remove a pin interaction from the featured collection
         """
         return {
+            "id": f"{self.identity.actor_uri}collections/featured/#remove/post/{self.post.pk}",
             "type": "Remove",
             "actor": self.identity.actor_uri,
             "object": self.post.object_uri,
@@ -500,12 +529,16 @@ class PostInteraction(StatorModel):
                 return
             post = Post.by_object_uri(object_uri, fetch=True)
 
-            return PostInteraction.objects.get_or_create(
+            i = PostInteraction.objects.get_or_create(
                 type=cls.Types.pin,
                 identity=identity,
                 post=post,
-                state__in=PostInteractionStates.group_active(),
+                defaults={"state": PostInteractionStates.new},
             )[0]
+            if i.state not in PostInteractionStates.group_active():
+                i.state = PostInteractionStates.new
+                i.save()
+            return i
 
     @classmethod
     def handle_remove_ap(cls, data):

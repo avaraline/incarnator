@@ -1,11 +1,12 @@
 from typing import Literal, Optional, Union
 
 from activities import models as activities_models
-from api import models as api_models
 from core.html import FediverseHtmlParser
 from hatchway import Field, Schema
-from users import models as users_models
 from users.services import IdentityService
+
+from api import models as api_models
+from users import models as users_models
 
 
 class Application(Schema):
@@ -14,12 +15,16 @@ class Application(Schema):
     website: str | None = None
     client_id: str
     client_secret: str
-    redirect_uri: str = Field(alias="redirect_uris")
+    redirect_uri: str
+    redirect_uris: list[str]
     vapid_key: str | None = None
 
     @classmethod
     def from_application(cls, application: api_models.Application) -> "Application":
-        return cls(**application.to_mastodon_json())
+        a = application.to_mastodon_json()
+        a["redirect_uri"] = a["redirect_uris"]
+        a["redirect_uris"] = [a["redirect_uri"]]
+        return cls(**a)
 
     @classmethod
     def from_application_no_keys(
@@ -51,6 +56,7 @@ class Account(Schema):
     username: str
     acct: str
     url: str
+    uri: str
     display_name: str
     note: str
     avatar: str
@@ -72,6 +78,7 @@ class Account(Schema):
     statuses_count: int
     followers_count: int
     following_count: int
+    hide_collections: bool = False
     source: dict | None = None
 
     @classmethod
@@ -87,7 +94,7 @@ class MediaAttachment(Schema):
     id: str
     type: Literal["unknown", "image", "gifv", "video", "audio"]
     url: str
-    preview_url: str
+    preview_url: str | None = None
     remote_url: str | None = None
     meta: dict
     description: str | None = None
@@ -143,6 +150,23 @@ class StatusApplication(Schema):
     website: str | None
 
 
+class PreviewCard(Schema):
+    url: str
+    title: str
+    description: str
+    type: Literal["link", "photo", "video", "rich"]
+    author_name: str
+    author_url: str
+    provider_name: str
+    provider_url: str
+    html: str
+    width: int
+    height: int
+    image: str | None
+    embed_url: str
+    blurhash: str | None
+
+
 class Status(Schema):
     id: str
     uri: str
@@ -163,8 +187,11 @@ class Status(Schema):
     in_reply_to_id: str | None = Field(...)
     in_reply_to_account_id: str | None = Field(...)
     reblog: Optional["Status"] = Field(...)
+    quote: dict | None = None
+    quote_id: str | None = None
+    quoted_status_id: str | None = None
     poll: Poll | None = Field(...)
-    card: None = Field(...)
+    card: PreviewCard | None = Field(...)
     language: str | None = Field(...)
     text: str | None = Field(...)
     edited_at: str | None = None
@@ -265,6 +292,36 @@ class Conversation(Schema):
     accounts: list[Account]
     last_status: Status | None = Field(...)
 
+    @classmethod
+    def from_conversation(
+        cls,
+        conversation: "activities_models.Conversation",
+        identity: "users_models.Identity",
+    ) -> "Conversation":
+        from activities.models.conversation import ConversationMembership
+
+        try:
+            membership = ConversationMembership.objects.get(
+                conversation=conversation, identity=identity
+            )
+            unread = membership.unread
+        except ConversationMembership.DoesNotExist:
+            unread = False
+        other_accounts = [
+            Account.from_identity(p)
+            for p in conversation.participants.all()
+            if p.pk != identity.pk
+        ]
+        last_status = None
+        if conversation.last_post:
+            last_status = Status.from_post(conversation.last_post, identity=identity)
+        return cls(
+            id=str(conversation.pk),
+            unread=unread,
+            accounts=other_accounts,
+            last_status=last_status,
+        )
+
 
 class Notification(Schema):
     id: str
@@ -277,9 +334,11 @@ class Notification(Schema):
         "favourite",
         "poll",
         "update",
+        "quote",
         "admin.sign_up",
         "admin.report",
     ]
+    group_key: str
     created_at: str
     account: Account
     status: Status | None = None
@@ -291,6 +350,35 @@ class Notification(Schema):
         interactions=None,
     ) -> "Notification":
         return cls(**event.to_mastodon_notification_json(interactions=interactions))
+
+
+class NotificationPolicySummary(Schema):
+    pending_requests_count: int
+    pending_notifications_count: int
+
+
+class NotificationPolicy(Schema):
+    for_not_following: Literal["accept", "filter", "drop"]
+    for_not_followers: Literal["accept", "filter", "drop"]
+    for_new_accounts: Literal["accept", "filter", "drop"]
+    for_private_mentions: Literal["accept", "filter", "drop"]
+    for_limited_accounts: Literal["accept", "filter", "drop"]
+    summary: NotificationPolicySummary
+
+    @classmethod
+    def from_identity(cls, identity) -> "NotificationPolicy":
+        cfg = identity.config_identity
+        return cls(
+            for_not_following=cfg.notification_policy_not_following,
+            for_not_followers=cfg.notification_policy_not_followers,
+            for_new_accounts=cfg.notification_policy_new_accounts,
+            for_private_mentions=cfg.notification_policy_private_mentions,
+            for_limited_accounts=cfg.notification_policy_limited_accounts,
+            summary=NotificationPolicySummary(
+                pending_requests_count=0,
+                pending_notifications_count=0,
+            ),
+        )
 
 
 class Tag(Schema):

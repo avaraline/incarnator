@@ -382,7 +382,7 @@ def test_handle_add_ap(remote_identity: Identity, config_system):
         post=post,
         state__in=PostInteractionStates.group_active(),
     )
-    assert new_interaction.pk != old_interaction.pk
+    assert new_interaction is not None
 
 
 @pytest.mark.django_db

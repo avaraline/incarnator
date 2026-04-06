@@ -3,32 +3,36 @@ name: Test
 on:
   push:
     paths:
-      - '**.py'
-      - 'requirements-dev.lock'
-      - '.github/workflows/test.yml'
+      - "**.py"
+      - "**.yml"
+      - "uv.lock"
     branches:
       - main
   pull_request:
     paths:
-      - '**.py'
-      - 'requirements-dev.lock'
+      - "**.py"
+      - "uv.lock"
 
 jobs:
   test:
     name: test py${{ matrix.python-version }} with pg${{ matrix.postgres-version }}
     runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis
+        ports:
+          - 6379:6379
     timeout-minutes: 8
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
-        postgres-version: [15, 16, 17]
+        python-version: ["3.13", "3.14"]
+        postgres-version: [14, 18]
     steps:
       - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
+        run: uv python install ${{ matrix.python-version }}
       - name: Set up Postgres ${{ matrix.postgres-version }}
         uses: ankane/setup-postgres@v1
         with:
@@ -37,12 +41,12 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get install -y libwebp-dev libjpeg-dev
-          python -m pip install -r requirements-dev.lock
+          uv sync --frozen
       - name: Run pytest
         env:
           TAKAHE_DATABASE_SERVER: "postgres://localhost/takahe"
         run: |
-          python -m pytest
+          uv run pytest
       - name: Run pre-commit
         run: |
-          pre-commit run -a --show-diff-on-failure
+          uv run pre-commit run -a --show-diff-on-failure
