@@ -1,7 +1,7 @@
 import mimetypes
 
 from django.core.files import File
-from django.shortcuts import get_object_or_404
+from api.views import get_object_or_404
 from hatchway import ApiError, QueryOrBody, api_view
 
 from activities.models import PostAttachment, PostAttachmentStates

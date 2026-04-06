@@ -3,7 +3,7 @@ import dataclasses
 from activities.models import PostInteraction, TimelineEvent
 from activities.services import TimelineService
 from django.http import Http404, HttpRequest
-from django.shortcuts import get_object_or_404
+from api.views import get_object_or_404
 from hatchway import ApiResponse, QueryOrBody, api_view
 
 from api import schemas

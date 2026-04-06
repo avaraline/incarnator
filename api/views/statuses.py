@@ -4,7 +4,7 @@ from typing import Literal
 
 from django.db.models import Q
 from django.http import HttpRequest
-from django.shortcuts import get_object_or_404
+from api.views import get_object_or_404
 from django.utils import timezone
 from pydantic import ConfigDict
 

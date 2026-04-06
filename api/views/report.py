@@ -1,4 +1,4 @@
-from django.shortcuts import get_object_or_404
+from api.views import get_object_or_404
 
 from activities.models import Post
 from api import schemas

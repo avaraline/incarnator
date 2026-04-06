@@ -1,7 +1,7 @@
 from typing import Literal
 
 from django.http import HttpRequest
-from django.shortcuts import get_object_or_404
+from api.views import get_object_or_404
 from hatchway import Schema, api_view
 
 from api import schemas
