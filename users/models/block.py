@@ -301,13 +301,11 @@ class Block(StatorModel):
         """
         Handles an incoming Block Undo
         """
-        # Resolve source and target and see if a Follow exists (it hopefully does)
         try:
             block = cls.by_ap(data["object"])
-        except KeyError:
-            raise ValueError("No Block locally for incoming Undo", data)
+        except (KeyError, cls.DoesNotExist):
+            return
         # Check the block's source is the actor
         if data["actor"] != block.source.actor_uri:
             raise ValueError("Undo actor does not match its Block object", data)
-        # Delete the follow
         block.delete()
