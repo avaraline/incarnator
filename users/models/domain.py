@@ -231,7 +231,7 @@ class Domain(StatorModel):
                         ):
                             nodeinfo20_url = link.get("href", nodeinfo20_url)
                             break
-                except (json.JSONDecodeError, AttributeError):
+                except (json.JSONDecodeError, AttributeError, UnicodeDecodeError):
                     pass
 
             try:
