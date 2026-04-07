@@ -7,10 +7,12 @@ FROM ${IMAGE_HOST}:${IMAGE_LABEL} AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc libc6-dev && \
+    rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml uv.lock /app/
-WORKDIR /app
+COPY pyproject.toml uv.lock /takahe/
+WORKDIR /takahe
 
 RUN uv sync --frozen --no-dev --no-install-project
 
@@ -24,14 +26,14 @@ ENV PYTHONUNBUFFERED=1 \
     GUNICORN_CMD_ARGS="--workers 8" \
     PATH="/takahe/.venv/bin:$PATH"
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
         libpq5 \
         libxslt1.1 \
         nginx \
         busybox \
-        postgresql-client \
-    && rm -rf /var/lib/apt/lists/*
+        postgresql-client && \
+    rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /cache
 
@@ -43,7 +45,7 @@ COPY docker/nginx.conf /etc/nginx/
 COPY docker/nginx.conf.d/* /etc/nginx/conf.d/
 
 COPY . /takahe
-COPY --from=builder /app/.venv /takahe/.venv
+COPY --from=builder /takahe/.venv /takahe/.venv
 
 # Sanity-test the nginx config
 RUN nginx -t
