@@ -1,5 +1,5 @@
 from django.http import HttpRequest
-from django.shortcuts import get_object_or_404
+from api.views import get_object_or_404
 
 from activities.models.conversation import Conversation, ConversationMembership
 from activities.services import TimelineService

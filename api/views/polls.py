@@ -1,5 +1,5 @@
 from django.http import Http404
-from django.shortcuts import get_object_or_404
+from api.views import get_object_or_404
 from hatchway import api_view, QueryOrBody
 
 from activities.models import Post, PostInteraction

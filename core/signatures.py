@@ -343,7 +343,7 @@ class HttpSignature:
                 method == "post"
                 and response.status_code >= 400
                 and response.status_code < 500
-                and response.status_code != 404
+                and response.status_code not in [404, 410]
             ):
                 raise ValueError(
                     f"POST error to {uri}: {response.status_code} {response.content!r}"

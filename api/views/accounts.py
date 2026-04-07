@@ -5,7 +5,7 @@ from activities.services import SearchService
 from core.models import Config
 from django.core.files import File
 from django.http import HttpRequest
-from django.shortcuts import get_object_or_404
+from api.views import get_object_or_404
 from hatchway import ApiResponse, QueryOrBody, api_view
 from users.services import IdentityService
 from users.shortcuts import by_handle_or_404
