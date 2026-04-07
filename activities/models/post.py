@@ -518,6 +518,7 @@ class Post(StatorModel):
                 fields=["visibility", "local", "created"],
                 name="ix_post_local_public_created",
             ),
+            models.Index(fields=["url"], name="activities_post_url_idx"),
         ]
 
     class urls(urlman.Urls):
