@@ -2,7 +2,6 @@ import re
 from datetime import timedelta
 from typing import Literal
 
-from django.db.models import Q
 from django.http import HttpRequest
 from api.views import get_object_or_404
 from django.utils import timezone
@@ -123,12 +122,12 @@ def _extract_quote_from_trailing_url(
     if not match:
         return None, text
     url = match.group(2)
-    post = (
-        Post.objects.not_hidden()
-        .visible_to(identity, include_replies=True)
-        .filter(Q(object_uri=url) | Q(url=url))
-        .first()
-    )
+    # Look up by object_uri first (unique index), then fall back to url.
+    # Avoids an OR query that causes a full table scan on large tables.
+    base_qs = Post.objects.not_hidden().visible_to(identity, include_replies=True)
+    post = base_qs.filter(object_uri=url).first()
+    if post is None:
+        post = base_qs.filter(url=url).first()
     if not post:
         return None, text
     cleaned = text[: match.start(2)].rstrip("\n ")
