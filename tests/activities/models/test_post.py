@@ -294,6 +294,58 @@ def test_content_map(remote_identity):
 
 
 @pytest.mark.django_db
+def test_quote_url_only_accepts_urls(remote_identity):
+    """
+    FEP-044f `quote` is a URL. BookWyrm Quotation objects overload the key
+    with HTML quotation text - rejecting non-URL strings prevents the post
+    save from blowing up the varchar(2048) quote_url column.
+    """
+    bookwyrm_quote_html = (
+        "<p>" + ("Car le totalitarisme politique n'est pas la forme " * 100) + "</p>"
+    )
+    assert len(bookwyrm_quote_html) > 2048
+
+    post = Post.by_ap(
+        data={
+            "id": "https://remote.test/user/u/quotation/1",
+            "type": "Note",
+            "content": "<p>see quote</p>",
+            "quote": bookwyrm_quote_html,
+            "attributedTo": "https://remote.test/test-actor/",
+            "published": "2026-05-15T10:00:00Z",
+        },
+        create=True,
+    )
+    assert post.quote_url is None
+
+    post2 = Post.by_ap(
+        data={
+            "id": "https://remote.test/posts/quote-url/",
+            "type": "Note",
+            "content": "<p>real quote</p>",
+            "quote": "https://other.test/posts/42",
+            "attributedTo": "https://remote.test/test-actor/",
+            "published": "2026-05-15T10:00:00Z",
+        },
+        create=True,
+    )
+    assert post2.quote_url == "https://other.test/posts/42"
+
+    post3 = Post.by_ap(
+        data={
+            "id": "https://remote.test/posts/quote-link/",
+            "type": "Note",
+            "content": "<p>linked quote</p>",
+            "quote": {"id": "https://other.test/posts/43", "type": "Link"},
+            "attributedTo": "https://remote.test/test-actor/",
+            "published": "2026-05-15T10:00:00Z",
+        },
+        create=True,
+    )
+    assert post3.quote_url == "https://other.test/posts/43"
+
+
+@pytest.mark.django_db
 def test_content_map_question(remote_identity: Identity):
     """
     Tests post contentmap for questions
@@ -399,6 +451,70 @@ def test_by_ap_attributed_to_object(remote_identity):
     )
     assert post.content == "Hello from Ghost"
     assert post.author.actor_uri == "https://remote.test/test-actor/"
+
+
+@pytest.mark.django_db
+def test_by_ap_attributed_to_list(remote_identity):
+    """
+    Tests that by_ap handles attributedTo as a list of URIs. WriteFreely
+    blog Articles ship ``attributedTo: [author_person, blog_group]`` and
+    we should accept that, taking the first entry (the author) as the
+    canonical Identity.
+    """
+    post = Post.by_ap(
+        data={
+            "id": "https://remote.test/posts/writefreely-1/",
+            "type": "Article",
+            "name": "Hello",
+            "content": "Hello from WriteFreely",
+            "summary": "<p>Hello from WriteFreely excerpt</p>",
+            "attributedTo": [
+                "https://remote.test/test-actor/",
+                "https://remote.test/blog-group/",
+            ],
+            "published": "2026-05-08T11:35:17Z",
+        },
+        create=True,
+    )
+    assert post.content == "Hello from WriteFreely"
+    assert post.author.actor_uri == "https://remote.test/test-actor/"
+    # Article posts must keep the full AS object on ``type_data`` (under an
+    # ``object`` key) so downstream renderers can read ``name`` / ``summary``
+    # for title-card teasers. Stripping to ``ArticleData`` -- as the previous
+    # path did -- dropped the title entirely and made write.as / WriteFreely
+    # articles unrenderable in the timeline.
+    assert isinstance(post.type_data, dict)
+    assert post.type_data["object"]["name"] == "Hello"
+    assert (
+        post.type_data["object"]["summary"] == "<p>Hello from WriteFreely excerpt</p>"
+    )
+
+
+@pytest.mark.django_db
+def test_by_ap_attributed_to_list_reversed_prefers_known_person(remote_identity):
+    """
+    If a server inverts the WriteFreely convention to ``[blog, author]``,
+    we should still attribute the post to the Person actor when it is
+    already known locally as non-Group. The Group URI is not (yet) a
+    stored Identity, so the cheap DB lookup picks the Person.
+    """
+    # ``remote_identity`` fixture is a Person actor on remote.test.
+    assert remote_identity.actor_type == "person"
+    post = Post.by_ap(
+        data={
+            "id": "https://remote.test/posts/writefreely-rev/",
+            "type": "Article",
+            "name": "Hello",
+            "content": "Hello again",
+            "attributedTo": [
+                "https://remote.test/blog-group/",
+                remote_identity.actor_uri,
+            ],
+            "published": "2026-05-08T11:35:17Z",
+        },
+        create=True,
+    )
+    assert post.author.actor_uri == remote_identity.actor_uri
 
 
 @pytest.mark.django_db
@@ -577,3 +693,76 @@ def test_post_targets_to_ap(
     elif visibility == Post.Visibilities.mentioned:
         assert "to" not in ap_dict
         assert ap_dict["cc"] == [other_identity.actor_uri]
+
+
+@pytest.mark.django_db
+def test_article_web_view_shows_cover_and_links_tags(remote_identity):
+    """
+    The web article view (local render) surfaces the AS ``image`` as a lead
+    image and renders hashtags as links; the Mastodon API content (remote
+    render) keeps neither the cover nor its <img>.
+    """
+    post = Post.by_ap(
+        data={
+            "id": "https://remote.test/posts/article-cover/",
+            "type": "Article",
+            "name": "Cover Test",
+            "content": "<p>Body text.</p>",
+            "image": {"type": "Image", "url": "https://remote.test/lead.jpg"},
+            "tag": [
+                {
+                    "type": "Hashtag",
+                    "name": "#news",
+                    "href": "https://remote.test/tags/news/",
+                }
+            ],
+            "attributedTo": "https://remote.test/test-actor/",
+            "published": "2026-05-08T11:35:17Z",
+        },
+        create=True,
+    )
+
+    assert post.article_cover_url == "https://remote.test/lead.jpg"
+
+    web = post.safe_content_local()
+    assert "https://remote.test/lead.jpg" in web
+    assert 'href="https://remote.test/tags/news/"' in web
+    assert "#news" in web
+
+    api = post.safe_content_remote()
+    assert "https://remote.test/lead.jpg" not in api
+    assert "Body text." in api
+
+
+@pytest.mark.parametrize(
+    "image,expected",
+    [
+        ("https://remote.test/a.jpg", "https://remote.test/a.jpg"),
+        (
+            {"type": "Image", "url": "https://remote.test/b.jpg"},
+            "https://remote.test/b.jpg",
+        ),
+        (
+            {"url": {"type": "Link", "href": "https://remote.test/c.jpg"}},
+            "https://remote.test/c.jpg",
+        ),
+        (
+            [{"url": "https://remote.test/d.jpg"}, "ignored"],
+            "https://remote.test/d.jpg",
+        ),
+        (None, None),
+        ({}, None),
+        ("ftp://remote.test/e.jpg", None),
+    ],
+)
+def test_article_cover_url_normalizes_image_shapes(image, expected):
+    post = Post(type=Post.Types.article, type_data={"object": {"image": image}})
+    assert post.article_cover_url == expected
+
+
+def test_article_cover_url_none_for_non_article():
+    post = Post(
+        type=Post.Types.note,
+        type_data={"object": {"image": "https://remote.test/x.jpg"}},
+    )
+    assert post.article_cover_url is None

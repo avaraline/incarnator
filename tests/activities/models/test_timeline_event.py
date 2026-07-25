@@ -1,4 +1,7 @@
+from unittest.mock import patch
+
 import pytest
+from django.db import OperationalError
 from django.utils import timezone
 
 from activities.models import (
@@ -9,6 +12,7 @@ from activities.models import (
 )
 from activities.services import PostService, TimelineService
 from core.ld import format_ld_date
+from stator.exceptions import TryAgainLater
 from users.models import Block, Follow, Identity, InboxMessage
 from users.services import IdentityService
 
@@ -394,3 +398,44 @@ def test_non_exclusive_list_does_not_exclude_from_home_timeline(
         e.type == TimelineEvent.Types.post and e.subject_post_id == post.pk
         for e in home
     ), "post from non-exclusive list member should remain in home timeline"
+
+
+@pytest.mark.django_db
+def test_handle_clear_timeline_translates_deadlock_to_tryagainlater(
+    identity: Identity,
+    other_identity: Identity,
+):
+    """
+    A Postgres deadlock during ClearTimeline cleanup should surface as
+    TryAgainLater so Stator silently reschedules instead of logging the
+    OperationalError. Other OperationalErrors must still propagate.
+    """
+    message = {"actor": str(identity.pk), "object": str(other_identity.pk)}
+
+    deadlock = OperationalError(
+        "deadlock detected\nDETAIL: Process A waits for ShareLock..."
+    )
+
+    class _BoomQuerySet:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def delete(self):
+            raise deadlock
+
+    with patch.object(TimelineEvent, "objects", _BoomQuerySet()):
+        with pytest.raises(TryAgainLater):
+            TimelineEvent.handle_clear_timeline(message)
+
+    other = OperationalError("connection terminated")
+
+    class _OtherErrorQuerySet:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def delete(self):
+            raise other
+
+    with patch.object(TimelineEvent, "objects", _OtherErrorQuerySet()):
+        with pytest.raises(OperationalError):
+            TimelineEvent.handle_clear_timeline(message)

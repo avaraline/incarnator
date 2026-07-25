@@ -1,11 +1,11 @@
 import time
 
 import pytest
-from django.test import Client
-
 from api.models import Application, Token
 from core.models import Config
+from django.test import Client
 from stator.runner import StatorModel, StatorRunner
+
 from users.models import Domain, Identity, User
 
 
@@ -57,6 +57,15 @@ kwIDAQAB
 
 
 @pytest.fixture(autouse=True)
+def _bypass_ssrf_check(monkeypatch):
+    """Disable SSRF DNS check in tests so pytest_httpx mocks work with fake domains."""
+    _noop = lambda request: None  # noqa: E731
+    monkeypatch.setattr("core.files.check_url_safety", _noop)
+    monkeypatch.setattr("core.signatures.check_url_safety", _noop)
+    monkeypatch.setattr("users.models.identity.check_url_safety", _noop)
+
+
+@pytest.fixture(autouse=True)
 def _test_settings(settings):
     # We use `StaticFilesStorage` instead of `ManifestStaticFilesStorage` in tests
     # since want stable filenames (`css/styles.css`) instead of hashed (`css/styles.55e7cbb9ba48.css`)
@@ -94,29 +103,25 @@ def client_with_user(client, user):
 
 
 @pytest.fixture
-@pytest.mark.django_db
-def user() -> User:
+def user(db) -> User:
     return User.objects.create(email="test@example.com")
 
 
 @pytest.fixture
-@pytest.mark.django_db
-def domain() -> Domain:
+def domain(db) -> Domain:
     return Domain.objects.create(
         domain="example.com", local=True, public=True, state="updated"
     )
 
 
 @pytest.fixture
-@pytest.mark.django_db
-def domain2() -> Domain:
+def domain2(db) -> Domain:
     return Domain.objects.create(
         domain="example2.com", local=True, public=True, state="updated"
     )
 
 
 @pytest.fixture
-@pytest.mark.django_db
 def identity_factory(user, domain, keypair):
     """
     Factory for creating identities with custom parameters
@@ -145,7 +150,6 @@ def identity_factory(user, domain, keypair):
 
 
 @pytest.fixture
-@pytest.mark.django_db
 def identity(identity_factory) -> Identity:
     """
     Creates a basic test identity with a user and domain.
@@ -154,7 +158,6 @@ def identity(identity_factory) -> Identity:
 
 
 @pytest.fixture
-@pytest.mark.django_db
 def identity2(user, domain2) -> Identity:
     """
     Creates a basic test identity with a user and domain.
@@ -188,8 +191,7 @@ def other_identity(user, domain) -> Identity:
 
 
 @pytest.fixture
-@pytest.mark.django_db
-def remote_identity() -> Identity:
+def remote_identity(db) -> Identity:
     """
     Creates a basic remote test identity with a domain.
     """
@@ -209,8 +211,7 @@ def remote_identity() -> Identity:
 
 
 @pytest.fixture
-@pytest.mark.django_db
-def remote_identity2() -> Identity:
+def remote_identity2(db) -> Identity:
     """
     Creates a basic remote test identity with a domain.
     """
@@ -226,7 +227,6 @@ def remote_identity2() -> Identity:
 
 
 @pytest.fixture
-@pytest.mark.django_db
 def api_token(identity) -> Token:
     """
     Creates an API application, an identity, and a token for that identity

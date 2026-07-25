@@ -2,11 +2,12 @@ import datetime
 from typing import Optional
 
 import httpx
+from core.exceptions import ActivityPubFormatError, ActorMismatchError
+from core.ld import canonicalise, get_str_or_id
 from django.db import models, transaction
 from django.utils import timezone
-
-from core.ld import canonicalise, get_str_or_id
 from stator.models import State, StateField, StateGraph, StatorModel
+
 from users.models.identity import Identity
 
 
@@ -263,7 +264,7 @@ class Block(StatorModel):
         if isinstance(data, str):
             bits = data.strip("/").split("/")
             if bits[-2] != "block":
-                raise ValueError(f"Unknown Block object URI: {data}")
+                raise ActivityPubFormatError(f"Unknown Block object URI: {data}")
             return Block.objects.get(pk=bits[-1])
         # Otherwise, do the object resolve
         else:
@@ -303,9 +304,9 @@ class Block(StatorModel):
         """
         try:
             block = cls.by_ap(data["object"])
-        except (KeyError, cls.DoesNotExist):
+        except KeyError, cls.DoesNotExist:
             return
         # Check the block's source is the actor
         if data["actor"] != block.source.actor_uri:
-            raise ValueError("Undo actor does not match its Block object", data)
+            raise ActorMismatchError("Undo actor does not match its Block object", data)
         block.delete()

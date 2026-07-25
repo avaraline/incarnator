@@ -6,12 +6,12 @@ import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 
+from core import sentry
+from core.models import Config
 from django.conf import settings
 from django.db import close_old_connections
 from django.utils import timezone
 
-from core import sentry
-from core.models import Config
 from stator.models import StatorModel, Stats
 
 logger = logging.getLogger(__name__)
@@ -269,15 +269,16 @@ def task_transition(instance: StatorModel, in_thread: bool = True):
                 "state_age": instance.state_age,
             },
         )
+        from_state = instance.state
         result = instance.transition_attempt()
         duration = time.monotonic() - started
         if result:
             logger.info(
-                f"{instance._meta.label_lower}: {instance.pk}: {instance.state} -> {result} ({duration:.2f}s)"
+                f"{instance._meta.label_lower}: {instance.pk}: {from_state} -> {result} ({duration:.2f}s)"
             )
         else:
             logger.info(
-                f"{instance._meta.label_lower}: {instance.pk}: {instance.state} unchanged  ({duration:.2f}s)"
+                f"{instance._meta.label_lower}: {instance.pk}: {from_state} unchanged  ({duration:.2f}s)"
             )
     if in_thread:
         close_old_connections()

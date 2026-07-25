@@ -1,5 +1,7 @@
 import httpx
 import pytest
+from django.conf import settings
+from django.templatetags.static import static
 from pytest_httpx import HTTPXMock
 
 from core.models import Config
@@ -236,6 +238,123 @@ def test_fetch_actor(httpx_mock, config_system):
 
 @pytest.mark.django_db
 @pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
+def test_fetch_actor_without_url_falls_back_to_actor_uri(httpx_mock, config_system):
+    """
+    Lemmy (and some other implementations) don't emit a top-level "url"; the
+    actor id is the web profile. profile_uri should fall back to actor_uri.
+    """
+    identity = Identity.objects.create(
+        actor_uri="https://lemmy.example/c/books",
+        local=False,
+    )
+    httpx_mock.add_response(
+        url="https://lemmy.example/.well-known/webfinger?resource=acct:books@lemmy.example",
+        headers={"Content-Type": "application/activity+json"},
+        json={
+            "subject": "acct:books@lemmy.example",
+            "links": [
+                {
+                    "rel": "self",
+                    "type": "application/activity+json",
+                    "href": "https://lemmy.example/c/books",
+                },
+            ],
+        },
+    )
+    httpx_mock.add_response(
+        url="https://lemmy.example/c/books",
+        headers={"Content-Type": "application/activity+json"},
+        json={
+            "@context": [
+                "https://www.w3.org/ns/activitystreams",
+                "https://w3id.org/security/v1",
+            ],
+            "id": "https://lemmy.example/c/books",
+            "type": "Group",
+            "inbox": "https://lemmy.example/c/books/inbox",
+            "followers": "https://lemmy.example/c/books/followers",
+            "publicKey": {
+                "id": "https://lemmy.example/c/books#main-key",
+                "owner": "https://lemmy.example/c/books",
+                "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nits-a-faaaake\n-----END PUBLIC KEY-----\n",
+            },
+            "name": "Books",
+            "preferredUsername": "books",
+            "summary": "<p>Book reader community.</p>",
+            "icon": {
+                "type": "Image",
+                "url": "https://lemmy.example/pictrs/image/books.png",
+            },
+        },
+    )
+    identity.fetch_actor()
+
+    identity = Identity.objects.get(pk=identity.pk)
+    assert identity.username == "books"
+    assert identity.actor_type == "group"
+    # No top-level "url" in the document -> fall back to the actor uri
+    assert identity.profile_uri == "https://lemmy.example/c/books"
+    assert identity.icon_uri == "https://lemmy.example/pictrs/image/books.png"
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
+def test_fetch_actor_with_list_type(httpx_mock, config_system):
+    """
+    JSON-LD allows "type" to be a list, and ActivityPods-style servers emit
+    ["Person", "foaf:Person"]. It should resolve to the known actor type.
+    """
+    identity = Identity.objects.create(
+        actor_uri="https://pods.example/u/test",
+        local=False,
+    )
+    httpx_mock.add_response(
+        url="https://pods.example/.well-known/webfinger?resource=acct:test@pods.example",
+        headers={"Content-Type": "application/activity+json"},
+        json={
+            "subject": "acct:test@pods.example",
+            "links": [
+                {
+                    "rel": "self",
+                    "type": "application/activity+json",
+                    "href": "https://pods.example/u/test",
+                },
+            ],
+        },
+    )
+    httpx_mock.add_response(
+        url="https://pods.example/u/test",
+        headers={"Content-Type": "application/activity+json"},
+        json={
+            "@context": [
+                "https://www.w3.org/ns/activitystreams",
+                "https://w3id.org/security/v1",
+                {"foaf": "http://xmlns.com/foaf/0.1/"},
+            ],
+            "id": "https://pods.example/u/test",
+            "type": ["Person", "foaf:Person"],
+            "inbox": "https://pods.example/u/test/inbox",
+            "followers": "https://pods.example/u/test/followers",
+            "publicKey": {
+                "id": "https://pods.example/u/test#main-key",
+                "owner": "https://pods.example/u/test",
+                "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nits-a-faaaake\n-----END PUBLIC KEY-----\n",
+            },
+            "name": "Test Pod User",
+            "preferredUsername": "test",
+            "url": "https://pods.example/u/test",
+        },
+    )
+    assert identity.fetch_actor()
+
+    identity = Identity.objects.get(pk=identity.pk)
+    assert identity.actor_type == "person"
+    assert identity.username == "test"
+    assert identity.name == "Test Pod User"
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
 def test_fetch_webfinger_url(httpx_mock: HTTPXMock, config_system):
     """
     Ensures that we can deal with various kinds of webfinger URLs
@@ -314,3 +433,77 @@ def test_attachment_to_ap(identity: Identity, config_system):
         '<a href="http://example.com" rel="nofollow">'
         '<span class="invisible">http://</span>example.com</a>'
     )
+
+
+@pytest.mark.django_db
+def test_default_icon_to_ap(identity: Identity, config_system):
+    """
+    Local identities without a custom avatar serve the default icon in AP,
+    while a custom icon_uri takes precedence.
+    """
+    response = identity.to_ap()
+
+    # Built from static() rather than hardcoded: the default icon must be at a
+    # URL this instance actually serves, whatever STATIC_URL is set to.
+    assert response["icon"] == {
+        "type": "Image",
+        "mediaType": "image/png",
+        "url": f"https://example.com{static('img/avatar.png')}",
+    }
+    assert response["icon"]["url"].startswith(
+        f"https://example.com{settings.STATIC_URL}"
+    )
+
+    identity.icon_uri = "https://example.com/icon.jpg"
+    response = identity.to_ap()
+
+    assert response["icon"]["url"] == "https://example.com/icon.jpg"
+
+
+@pytest.mark.django_db
+def test_default_icon_migration(identity_factory, domain):
+    """
+    The 0035 data migration clears stock avatar.svg icon_uri values and
+    transitions affected local identities to "edited" for AP fanout.
+    """
+    from importlib import import_module
+
+    from django.apps import apps
+
+    migration = import_module("users.migrations.0035_fanout_default_icon_update")
+
+    no_icon = identity_factory(username="noicon")
+    no_icon.state = "updated"
+    no_icon.save()
+    old_default = identity_factory(
+        username="olddefault", icon_uri="https://example.com/s/img/avatar.svg"
+    )
+    old_default.state = "updated"
+    old_default.save()
+    custom = identity_factory(
+        username="custom", icon_uri="https://example.com/custom.jpg"
+    )
+    custom.state = "updated"
+    custom.save()
+    remote = Identity.objects.create(
+        actor_uri="https://remote.example/@someone/",
+        username="someone",
+        domain=domain,
+        local=False,
+        icon_uri="https://remote.example/s/img/avatar.svg",
+        state="updated",
+    )
+
+    migration.update_default_icons(apps, None)
+
+    no_icon.refresh_from_db()
+    assert no_icon.state == "edited"
+    old_default.refresh_from_db()
+    assert old_default.icon_uri == ""
+    assert old_default.state == "edited"
+    custom.refresh_from_db()
+    assert custom.icon_uri == "https://example.com/custom.jpg"
+    assert custom.state == "updated"
+    remote.refresh_from_db()
+    assert remote.icon_uri == "https://remote.example/s/img/avatar.svg"
+    assert remote.state == "updated"

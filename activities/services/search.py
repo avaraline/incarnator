@@ -1,10 +1,11 @@
 import httpx
+from core.files import SSRFAttemptError
+from core.json import find_ap_alternate, json_from_response
+from core.ld import canonicalise, get_first_concrete_type
+from users.models.system_actor import SystemActor
 
 from activities.models import Hashtag, Post
-from core.json import json_from_response
-from core.ld import canonicalise
 from users.models import Domain, Identity, IdentityStates
-from users.models.system_actor import SystemActor
 
 
 class SearchService:
@@ -63,7 +64,9 @@ class SearchService:
             for identity in Identity.objects.filter(username__istartswith=handle)[:20]:
                 results.add(identity)
             if "." in handle:
-                for identity in Identity.objects.filter(domain__iexact=handle)[:20]:
+                for identity in Identity.objects.filter(domain__domain__iexact=handle)[
+                    :20
+                ]:
                     results.add(identity)
 
         if prio_result:
@@ -79,23 +82,47 @@ class SearchService:
         if "://" not in self.query:
             return None
 
-        # Fetch the provided URL as the system actor to retrieve the AP JSON
-        try:
-            response = (self.identity or SystemActor()).signed_request(
-                method="get",
-                uri=self.query,
-            )
-        except httpx.RequestError:
+        # Fetch the provided URL as the system actor to retrieve the AP JSON.
+        # Some hosts (e.g. WordPress's ActivityPub plugin) do not
+        # content-negotiate the canonical permalink and always return HTML.
+        # When that happens we follow ``Link: rel="alternate"`` (or the
+        # equivalent ``<link>`` tag) once to reach the AP object.
+        fetcher = self.identity or SystemActor()
+        uri = self.query
+        json_data: dict | None = None
+        seen: set[str] = set()
+        for _ in range(2):
+            if uri in seen:
+                return None
+            seen.add(uri)
+            try:
+                response = fetcher.signed_request(method="get", uri=uri)
+            except httpx.RequestError, SSRFAttemptError:
+                return None
+            if response.status_code >= 400:
+                return None
+            try:
+                json_data = json_from_response(response)
+                break
+            except ValueError:
+                alt = find_ap_alternate(response)
+                if not alt:
+                    return None
+                uri = alt
+        if json_data is None:
             return None
-        if response.status_code >= 400:
-            return None
-
         try:
-            json_data = json_from_response(response)
             document = canonicalise(json_data, include_security=True, outbound=False)
         except ValueError:
             return None
-        type = document.get("type", "unknown").lower()
+        # JSON-LD allows a list of types (e.g. ["Person", "foaf:Person"])
+        post_types = [value.lower() for value in Post.Types.values]
+        type = (
+            get_first_concrete_type(
+                document.get("type"), preferred=Identity.ACTOR_TYPES + post_types
+            )
+            or "unknown"
+        )
 
         # Is it an identity?
         if type in Identity.ACTOR_TYPES:
@@ -106,7 +133,7 @@ class SearchService:
             return identity
 
         # Is it a post?
-        elif type in [value.lower() for value in Post.Types.values]:
+        elif type in post_types:
             # Try and retrieve the post by URI
             # (we do not trust the JSON we just got - fetch from source!)
             try:

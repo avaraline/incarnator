@@ -17,6 +17,7 @@ from pydantic import (
 )
 from pydantic_core import Url
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
 from takahe import __version__
 
 BASE_DIR = Path(__file__).resolve().parent.parent

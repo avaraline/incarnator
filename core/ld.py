@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import urllib.parse as urllib_parse
+from collections.abc import Container
 
 from dateutil import parser
 from pyld import jsonld
@@ -775,6 +776,47 @@ def get_str_or_id(value: str | dict | None, key: str = "id") -> str | None:
     elif isinstance(value, dict):
         return value.get(key)
     return None
+
+
+# The generic ActivityStreams base classes, which JSON-LD permits alongside
+# a concrete type (e.g. ["Activity", "Create"])
+GENERIC_AS_TYPES = frozenset(
+    {
+        "activity",
+        "collection",
+        "collectionpage",
+        "document",
+        "intransitiveactivity",
+        "link",
+        "object",
+        "orderedcollection",
+        "orderedcollectionpage",
+    }
+)
+
+
+def get_first_concrete_type(
+    value, preferred: Container[str] | None = None
+) -> str | None:
+    """
+    Given an AS ``type`` value (a string or, per JSON-LD, a list of
+    strings), return the first concrete type lowercased, preferring
+    anything over the generic ActivityStreams base classes.
+
+    ``preferred`` is an optional set of known types to pick first
+    regardless of order, so a vocabulary-prefixed duplicate does not win
+    (e.g. ["foaf:Person", "Person"] -> "person").
+    """
+    if not isinstance(value, list):
+        value = [value]
+    types = [item.lower() for item in value if isinstance(item, str) and item]
+    if not types:
+        return None
+    if preferred is not None:
+        known = next((item for item in types if item in preferred), None)
+        if known:
+            return known
+    return next((item for item in types if item not in GENERIC_AS_TYPES), types[0])
 
 
 def format_ld_date(value: datetime.datetime) -> str:

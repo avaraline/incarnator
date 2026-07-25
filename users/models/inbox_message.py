@@ -6,6 +6,7 @@ from pyld.jsonld import JsonLdError
 
 from activities.models.hashtag import Hashtag
 from core.exceptions import ActivityPubError
+from core.ld import get_first_concrete_type
 from core.signatures import (
     HttpSignature,
     LDSignature,
@@ -104,7 +105,7 @@ class InboxMessageStates(StateGraph):
                     sig_type,
                     actor_uri,
                 )
-            except (VerificationError, VerificationFormatError):
+            except VerificationError, VerificationFormatError:
                 logger.warning(
                     "Inbox: Deferred %s verification failed for %s",
                     sig_type,
@@ -155,20 +156,26 @@ class InboxMessageStates(StateGraph):
                 case "block":
                     Block.handle_ap(instance.message)
                 case "announce":
-                    # Ignore Lemmy-specific likes and dislikes for perf reasons
-                    # (we can't parse them anyway)
-                    if instance.message_object_type in ["like", "dislike"]:
+                    # Ignore Lemmy-specific likes/dislikes and their undos
+                    # for perf reasons (we don't tally group-relayed votes)
+                    if instance.message_object_type in ["like", "dislike", "undo"]:
                         return cls.processed
-                    PostInteraction.handle_ap(instance.message)
+                    if instance.message_object_type in ["create", "update", "delete"]:
+                        # Group actors (e.g. Lemmy communities) relay their
+                        # members' activities to followers inside Announce
+                        Post.handle_announced_activity_ap(instance.message)
+                    else:
+                        PostInteraction.handle_ap(instance.message)
                 case "like":
                     PostInteraction.handle_ap(instance.message)
                 case "create":
                     match instance.message_object_type:
                         case "note":
-                            if instance.message_object_has_content:
+                            if instance.message_object_has_content_or_attachment:
                                 Post.handle_create_ap(instance.message)
                             else:
-                                # Notes without content are Interaction candidates
+                                # Bare Notes (no content, no attachment) are
+                                # Interaction candidates, e.g. poll votes.
                                 PostInteraction.handle_ap(instance.message)
                         case "question":
                             Post.handle_create_ap(instance.message)
@@ -234,6 +241,12 @@ class InboxMessageStates(StateGraph):
                         case unknown:
                             return cls.errored
                 case "delete":
+                    # Forward before deleting: targeting needs our copy of
+                    # the post (no-op unless the inbox kept a raw document)
+                    if instance.raw_document:
+                        Post.forward_activity_ap(
+                            instance.message, instance.raw_document
+                        )
                     # If there is no object type, we need to see if it's a profile or a post
                     if not isinstance(instance.message["object"], dict):
                         if Identity.objects.filter(
@@ -318,8 +331,16 @@ class InboxMessageStates(StateGraph):
                             return cls.errored
                 case unknown:
                     return cls.errored
+            # Replies (and their edits) to local threads are forwarded to
+            # the thread author's followers once ingested (no-op unless
+            # the inbox kept a raw LD-signed document)
+            if instance.raw_document and instance.message_type in [
+                "create",
+                "update",
+            ]:
+                Post.forward_activity_ap(instance.message, instance.raw_document)
             return cls.processed
-        except (ActivityPubError, JsonLdError):
+        except ActivityPubError, JsonLdError:
             return cls.errored
 
 
@@ -333,6 +354,12 @@ class InboxMessage(StatorModel):
 
     message = models.JSONField()
     metadata = models.JSONField(null=True, blank=True, default=None)
+
+    # The original (pre-canonicalisation) document, kept only when the
+    # activity carries an LD signature and may need to be forwarded to a
+    # local thread's followers (AP 7.1.2): the signature only verifies
+    # over the exact structure the origin signed.
+    raw_document = models.JSONField(null=True, blank=True, default=None)
 
     state = StateField(InboxMessageStates)
 
@@ -354,10 +381,12 @@ class InboxMessage(StatorModel):
 
     @property
     def message_object_type(self) -> str | None:
-        if isinstance(self.message["object"], dict):
-            return self.message["object"].get("type", "").lower() or None
-        else:
+        if not isinstance(self.message["object"], dict):
             return None
+        # JSON-LD permits multiple types. Prefer a concrete type over the
+        # generic ActivityStreams base classes so e.g. ["Document", "Page"]
+        # is routed to the Page post handler.
+        return get_first_concrete_type(self.message["object"].get("type"))
 
     @property
     def message_type_full(self):
@@ -371,6 +400,10 @@ class InboxMessage(StatorModel):
         return self.message.get("actor")
 
     @property
-    def message_object_has_content(self):
+    def message_object_has_content_or_attachment(self):
         object = self.message.get("object", {})
-        return "content" in object or "contentMap" in object
+        return (
+            "content" in object
+            or "contentMap" in object
+            or bool(object.get("attachment"))
+        )

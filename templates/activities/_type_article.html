@@ -1,0 +1,32 @@
+{% load activity_tags %}
+
+{% if post.type_data and post.type_data.object %}
+  {% if post.type_data.object.name and not post.in_reply_to %}
+    <h4 class="article-title">
+      <a href="{{ post.url|default:post.object_uri }}">{{ post.type_data.object.name }}</a>
+    </h4>
+  {% endif %}
+  {% if local_display and post.article_cover_url %}
+    <figure class="article-cover">
+      <img src="{{ post.article_cover_url }}" alt="" loading="lazy">
+    </figure>
+  {% endif %}
+{% endif %}
+
+<div class="article-body">
+  {{ sanitized_content }}
+</div>
+
+{% if post.type_data and post.type_data.object %}
+  {% with tags=post.type_data.object.tag %}
+    {% if tags %}
+      <div class="article-tags">
+        {% for t in tags %}
+          {% if t.type == 'Hashtag' and t.name %}
+            <span class="tag">{% if t.href %}<a href="{{ t.href }}" rel="tag">{{ t.name }}</a>{% else %}{{ t.name }}{% endif %}</span>
+          {% endif %}
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+{% endif %}

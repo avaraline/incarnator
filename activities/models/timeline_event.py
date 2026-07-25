@@ -1,8 +1,9 @@
-from django.db import models
+from django.db import OperationalError, models
 from django.utils import timezone
 
 from api.models.push import PushType
 from core.ld import format_ld_date
+from stator.exceptions import TryAgainLater
 from users.models import Bookmark, Identity
 
 
@@ -23,6 +24,7 @@ class TimelineEvent(models.Model):
         quoted = "quoted"  # Someone quoting one of our posts
         announcement = "announcement"  # Server announcement
         identity_created = "identity_created"  # New identity created
+        poll = "poll"  # A poll we created or voted in has ended
 
     NOTIFICATION_NAMES = {
         Types.post: "status",
@@ -33,6 +35,7 @@ class TimelineEvent(models.Model):
         Types.follow_requested: "follow_request",
         Types.quoted: "quote",
         Types.identity_created: "admin.sign_up",
+        Types.poll: "poll",
     }
 
     # The user this event is for
@@ -82,6 +85,13 @@ class TimelineEvent(models.Model):
             ),
             models.Index(fields=["identity", "type", "subject_identity"]),
             models.Index(fields=["identity", "created"]),
+            # Supports the Mastodon /api/v1/notifications paginator which
+            # filters by identity + dismissed=false and orders by id DESC.
+            models.Index(
+                fields=["identity", "-id"],
+                condition=models.Q(dismissed=False),
+                name="te_identity_idneg_undismissed",
+            ),
         ]
 
     ### Alternate constructors ###
@@ -173,6 +183,28 @@ class TimelineEvent(models.Model):
         )
         if created:
             identity.notify(PushType.quote, post.author, body=post.content_preview())
+        return event
+
+    @classmethod
+    def add_poll_ended(cls, identity, post):
+        """
+        Notifies identity that a poll they created or voted in has ended
+        """
+        event, created = cls.objects.get_or_create(
+            identity=identity,
+            type=cls.Types.poll,
+            subject_post=post,
+            subject_identity=post.author,
+        )
+        if created:
+            title = (
+                "Your poll has ended"
+                if identity == post.author
+                else "A poll you voted in has ended"
+            )
+            identity.notify(
+                PushType.poll, post.author, title=title, body=post.content_preview()
+            )
         return event
 
     @classmethod
@@ -287,28 +319,36 @@ class TimelineEvent(models.Model):
             q = models.Q(
                 type=cls.Types.post, subject_post__author_id=object_id
             ) | models.Q(type=cls.Types.boost, subject_identity_id=object_id)
-        TimelineEvent.objects.filter(q, identity_id=actor_id).delete()
-        if full_erase:
-            Bookmark.objects.filter(
-                identity_id=actor_id, post__author_id=object_id
-            ).delete()
-            Bookmark.objects.filter(
-                identity_id=actor_id, post__author_id=object_id
-            ).delete()
-            PostInteraction.objects.filter(
-                identity=actor_id, post__author=object_id
-            ).update(state=PostInteractionStates.undone)
-            PostInteraction.objects.filter(
-                identity=object_id, post__author=actor_id
-            ).update(state=PostInteractionStates.undone)
-            actor = Identity.objects.filter(pk=actor_id).first()
-            if actor:
-                for post in actor.posts_mentioning.filter(author_id=object_id):
-                    post.mentions.remove(actor)
-                    parent = post.in_reply_to_post()
-                    if parent and parent.author_id == actor_id:
-                        # recalculate reply count
-                        parent.calculate_stats()
+        try:
+            TimelineEvent.objects.filter(q, identity_id=actor_id).delete()
+            if full_erase:
+                Bookmark.objects.filter(
+                    identity_id=actor_id, post__author_id=object_id
+                ).delete()
+                Bookmark.objects.filter(
+                    identity_id=actor_id, post__author_id=object_id
+                ).delete()
+                PostInteraction.objects.filter(
+                    identity=actor_id, post__author=object_id
+                ).update(state=PostInteractionStates.undone)
+                PostInteraction.objects.filter(
+                    identity=object_id, post__author=actor_id
+                ).update(state=PostInteractionStates.undone)
+                actor = Identity.objects.filter(pk=actor_id).first()
+                if actor:
+                    for post in actor.posts_mentioning.filter(author_id=object_id):
+                        post.mentions.remove(actor)
+                        parent = post.in_reply_to_post()
+                        if parent and parent.author_id == actor_id:
+                            # recalculate reply count
+                            parent.calculate_stats()
+        except OperationalError as e:
+            # Concurrent deletes on activities_timelineevent (e.g. a Post delete
+            # cascade racing another ClearTimeline) can deadlock. Re-raise as
+            # TryAgainLater so Stator silently reschedules.
+            if "deadlock detected" not in str(e):
+                raise
+            raise TryAgainLater() from e
 
     ### Mastodon Client API ###
 

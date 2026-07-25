@@ -7,6 +7,7 @@ from django.core.mail import EmailMultiAlternatives
 from django.db import models
 from django.template.loader import render_to_string
 
+from core.exceptions import ActivityPubFormatError
 from core.ld import canonicalise, format_ld_date, get_list
 from core.models import Config
 from core.snowflake import Snowflake
@@ -160,9 +161,9 @@ class Report(StatorModel):
         domain_id = urlparse(data["actor"]).hostname
         source_domain = Domain.get_remote_domain(domain_id)
         if source_domain is None:
-            raise ValueError("Cannot handle flag: no source domain")
+            raise ActivityPubFormatError("Cannot handle flag: no source domain")
         if source_domain.blocked:
-            raise ValueError("Cannot handle flag: source domain is blocked")
+            raise ActivityPubFormatError("Cannot handle flag: source domain is blocked")
         source_identity = Identity.objects.filter(
             local=False, actor_uri=data["actor"]
         ).first()
@@ -170,7 +171,9 @@ class Report(StatorModel):
             source_identity
             and source_identity.restriction == Identity.Restriction.blocked
         ):
-            raise ValueError("Cannot handle flag: source identity is blocked")
+            raise ActivityPubFormatError(
+                "Cannot handle flag: source identity is blocked"
+            )
         # Resolve the objects into items
         objects = get_list(data, "object")
         subject_identity = None
@@ -183,7 +186,7 @@ class Report(StatorModel):
             if post:
                 subject_post = post
         if subject_identity is None:
-            raise ValueError("Cannot handle flag: no identity object")
+            raise ActivityPubFormatError("Cannot handle flag: no identity object")
         # Make a report object
         cls.objects.create(
             subject_identity=subject_identity,

@@ -1,4 +1,7 @@
+import re
+
 from django.contrib.auth.decorators import login_required
+from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect
 from django.utils.decorators import method_decorator
 from django.views.generic import ListView, TemplateView
@@ -39,9 +42,14 @@ class Tag(ListView):
 
     def get(self, request, hashtag, *args, **kwargs):
         tag = hashtag.lower().lstrip("#")
+        # Reject any tag that isn't a plain slug so the redirect target below
+        # cannot be tricked into pointing off-site (e.g. "\\evil.com").
+        if not re.fullmatch(r"[a-z0-9_]+", tag):
+            raise Http404("Invalid hashtag")
         if hashtag != tag:
-            # SEO sanitize
-            return redirect(f"/tags/{tag}/", permanent=True)
+            # SEO sanitize. Concatenate against a constant "/tags/" prefix so
+            # static analysers can see the result is always a relative path.
+            return redirect("/tags/" + tag + "/", permanent=True)
         self.hashtag = get_object_or_404(Hashtag.objects.public(), hashtag=tag)
         return super().get(request, *args, **kwargs)
 

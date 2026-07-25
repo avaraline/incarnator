@@ -1,9 +1,10 @@
 import logging
 import re
 
+from core.exceptions import ActivityPubFormatError
 from django.db import models
-
 from stator.models import State, StateField, StateGraph, StatorModel
+
 from users.models.system_actor import SystemActor
 
 logger = logging.getLogger(__name__)
@@ -130,7 +131,7 @@ class Relay(StatorModel):
     def get_by_ap(cls, message) -> "Relay":
         m = re.match(r".+/relay/(\d+)/#(follow|unfollow)$", message["object"]["id"])
         if not m:
-            raise ValueError("Not a valid relay follow response")
+            raise ActivityPubFormatError("Not a valid relay follow response")
         return cls.objects.get(pk=int(m[1]))
 
     @classmethod

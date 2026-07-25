@@ -287,6 +287,9 @@ class Emoji(StatorModel):
             if not create:
                 raise KeyError(f"No emoji with ID {data['id']}", data)
 
+        if domain is None:
+            raise ValueError("No domain for emoji", data)
+
         # Name could be a direct property, or in a language'd value
         if "name" in data:
             name = data["name"]
