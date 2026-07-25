@@ -18,6 +18,7 @@ from httpx._types import TimeoutTypes
 from idna.core import InvalidCodepoint
 from pyld import jsonld
 
+from core.exceptions import ActivityPubDeliveryError
 from core.files import SSRFAttemptError, check_url_safety
 from core.ld import format_ld_date
 
@@ -248,7 +249,7 @@ class HttpSignature:
                 cls._check_timestamp_skew(
                     int(signature_details["created"]), "(created) parameter"
                 )
-            except (KeyError, ValueError, TypeError):
+            except KeyError, ValueError, TypeError:
                 raise VerificationFormatError("Invalid (created) parameter")
         # Build the signed string, passing params so (created)/(expires) can be resolved.
         headers_string = cls.headers_from_request(
@@ -356,8 +357,8 @@ class HttpSignature:
                 and response.status_code < 500
                 and response.status_code not in [404, 410]
             ):
-                raise ValueError(
-                    f"POST error to {uri}: {response.status_code} {response.content!r}"
+                raise ActivityPubDeliveryError(
+                    uri, response.status_code, response.content
                 )
             return response
 

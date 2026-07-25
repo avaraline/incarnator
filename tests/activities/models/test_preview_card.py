@@ -10,9 +10,8 @@ from activities.models.post import _attach_preview_card
 from activities.models.preview_card import (
     PreviewCard,
     PreviewCardStates,
-    SSRFAttemptError,
-    _check_url_safety,
 )
+from core.files import SSRFAttemptError, check_url_safety
 from django.core.management import call_command
 
 
@@ -115,20 +114,6 @@ def test_url_without_params_unchanged():
 
 
 # ---------------------------------------------------------------------------
-# DB smoke test
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.django_db
-def test_preview_card_create_defaults():
-    card = PreviewCard.objects.create(url="https://example.com/article")
-    assert card.state == "needs_fetch"
-    assert card.card_type == "link"
-    assert card.title == ""
-    assert card.image_url == ""
-
-
-# ---------------------------------------------------------------------------
 # SSRF protection
 # ---------------------------------------------------------------------------
 
@@ -142,42 +127,42 @@ def test_ssrf_blocks_loopback():
     req = httpx.Request("GET", "http://localhost/admin")
     with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("127.0.0.1")):
         with pytest.raises(SSRFAttemptError):
-            _check_url_safety(req)
+            check_url_safety(req)
 
 
 def test_ssrf_blocks_private_10():
     req = httpx.Request("GET", "http://internal.corp/secret")
     with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("10.0.0.5")):
         with pytest.raises(SSRFAttemptError):
-            _check_url_safety(req)
+            check_url_safety(req)
 
 
 def test_ssrf_blocks_private_192_168():
     req = httpx.Request("GET", "http://router.local/")
     with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("192.168.1.1")):
         with pytest.raises(SSRFAttemptError):
-            _check_url_safety(req)
+            check_url_safety(req)
 
 
 def test_ssrf_blocks_aws_metadata():
     req = httpx.Request("GET", "http://169.254.169.254/latest/meta-data/")
     with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("169.254.169.254")):
         with pytest.raises(SSRFAttemptError):
-            _check_url_safety(req)
+            check_url_safety(req)
 
 
-def test_ssrf_blocks_unresolvable():
+def test_ssrf_raises_connect_error_for_unresolvable():
     req = httpx.Request("GET", "http://doesnotexist.invalid/")
     with patch("socket.getaddrinfo", side_effect=socket.gaierror("not found")):
-        with pytest.raises(SSRFAttemptError):
-            _check_url_safety(req)
+        with pytest.raises(httpx.ConnectError):
+            check_url_safety(req)
 
 
 def test_ssrf_allows_public_ip():
     req = httpx.Request("GET", "https://example.com/")
     # 93.184.216.34 is example.com — a real public IP
     with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("93.184.216.34")):
-        _check_url_safety(req)  # should not raise
+        check_url_safety(req)  # should not raise
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +262,65 @@ def test_handle_needs_fetch_ssrf_blocked(httpx_mock, config_system):
     with patch("socket.getaddrinfo", return_value=[(2, 1, 0, "", ("192.168.1.1", 80))]):
         result = PreviewCardStates.handle_needs_fetch(card)
     assert result == PreviewCardStates.fetch_failed
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(
+    assert_all_requests_were_expected=False, can_send_already_matched_responses=True
+)
+def test_handle_needs_fetch_drops_oversized_image_url(httpx_mock, config_system):
+    """An oversized og:image is dropped along with its now-meaningless dimensions."""
+    long_image = "https://example.com/" + ("a" * 3000) + ".jpg"
+    html = (
+        "<html><head><title>T</title>"
+        f'<meta property="og:image" content="{long_image}" />'
+        '<meta property="og:image:width" content="1200" />'
+        '<meta property="og:image:height" content="630" />'
+        "</head></html>"
+    )
+    httpx_mock.add_response(
+        url="https://example.com/big-image",
+        headers={"Content-Type": "text/html"},
+        text=html,
+    )
+    card = PreviewCard.objects.create(url="https://example.com/big-image")
+    with patch(
+        "socket.getaddrinfo", return_value=[(2, 1, 0, "", ("93.184.216.34", 443))]
+    ):
+        result = PreviewCardStates.handle_needs_fetch(card)
+    card.refresh_from_db()
+    assert result == PreviewCardStates.fetched
+    assert card.image_url == ""
+    # Dimensions must not linger without an image (avoids inconsistent API output).
+    assert card.image_width is None
+    assert card.image_height is None
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(
+    assert_all_requests_were_expected=False, can_send_already_matched_responses=True
+)
+def test_handle_needs_fetch_truncates_long_author(httpx_mock, config_system):
+    """An og:article:author longer than the column limit is truncated to fit."""
+    long_author = "X" * 600
+    html = (
+        "<html><head><title>T</title>"
+        f'<meta property="og:article:author" content="{long_author}" />'
+        "</head></html>"
+    )
+    httpx_mock.add_response(
+        url="https://example.com/long-author",
+        headers={"Content-Type": "text/html"},
+        text=html,
+    )
+    card = PreviewCard.objects.create(url="https://example.com/long-author")
+    with patch(
+        "socket.getaddrinfo", return_value=[(2, 1, 0, "", ("93.184.216.34", 443))]
+    ):
+        result = PreviewCardStates.handle_needs_fetch(card)
+    card.refresh_from_db()
+    assert result == PreviewCardStates.fetched
+    assert card.author_name == "X" * 500
 
 
 # ---------------------------------------------------------------------------

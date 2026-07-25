@@ -1,19 +1,11 @@
-import ipaddress
-import socket
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-import httpx
+from core.files import make_safe_client
 from core.uris import ProxyAbsoluteUrl
-from django.conf import settings
 from django.db import models
 from django.utils import timezone
 from stator.models import State, StateField, StateGraph, StatorModel
-
-
-class SSRFAttemptError(ValueError):
-    pass
-
 
 # ---------------------------------------------------------------------------
 # Tracking param stripping
@@ -63,52 +55,6 @@ _GLOBAL_BLOCKED_PARAMS: frozenset[str] = frozenset(
 
 # Tier 2: strip any param whose name starts with one of these prefixes.
 _GLOBAL_BLOCKED_PREFIXES: tuple[str, ...] = ("utm_", "ga_", "mtm_", "pk_")
-
-
-# ---------------------------------------------------------------------------
-# SSRF protection
-# ---------------------------------------------------------------------------
-
-
-def _check_url_safety(request: httpx.Request) -> None:
-    """
-    httpx event hook: validates that the request target does not resolve to a
-    private/reserved IP address. Fires on every request including redirect hops.
-    Raises SSRFAttemptError to abort if any resolved IP is unsafe.
-    """
-    host = request.url.host
-    port = request.url.port or (443 if request.url.scheme == "https" else 80)
-    try:
-        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
-        raise SSRFAttemptError(f"Cannot resolve host {host!r}: {exc}") from exc
-    for _, _, _, _, sockaddr in infos:
-        ip = ipaddress.ip_address(sockaddr[0])
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
-            raise SSRFAttemptError(
-                f"Request to {host!r} blocked: resolved to non-global IP {sockaddr[0]}"
-            )
-
-
-def _make_safe_client() -> httpx.Client:
-    """
-    Returns an httpx.Client configured with SSRF protection, timeouts,
-    redirect limits, and a User-Agent header.
-    """
-    return httpx.Client(
-        follow_redirects=True,
-        max_redirects=5,
-        timeout=httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0),
-        headers={"User-Agent": settings.TAKAHE_USER_AGENT},
-        event_hooks={"request": [_check_url_safety]},
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -180,21 +126,25 @@ class PreviewCardStates(StateGraph):
         if parsed.scheme not in ("http", "https"):
             return cls.fetch_failed
 
+        max_bytes = 2 * 1024 * 1024
         try:
-            with _make_safe_client() as client:
-                response = client.get(instance.url)
-        except Exception:
-            return cls.fetch_failed
-
-        content_type = response.headers.get("content-type", "")
-        if "text/html" not in content_type:
-            return cls.fetch_failed
-
-        # Read at most 2 MB
-        try:
-            body = response.content
-            if len(body) > 2 * 1024 * 1024:
-                body = body[: 2 * 1024 * 1024]
+            with make_safe_client() as client:
+                with client.stream(
+                    "GET", instance.url, follow_redirects=True
+                ) as response:
+                    if response.status_code >= 400:
+                        return cls.fetch_failed
+                    content_type = response.headers.get("content-type", "")
+                    if "text/html" not in content_type:
+                        return cls.fetch_failed
+                    body = bytearray()
+                    for chunk in response.iter_bytes(chunk_size=8192):
+                        remaining = max_bytes - len(body)
+                        if remaining <= 0:
+                            break
+                        body.extend(chunk[:remaining])
+                        if len(body) >= max_bytes:
+                            break
         except Exception:
             return cls.fetch_failed
 
@@ -209,17 +159,30 @@ class PreviewCardStates(StateGraph):
         instance.description = (
             meta.get("og:description") or meta.get("description") or ""
         )
+        # og:* values come from arbitrary remote HTML and can exceed the column
+        # widths they're stored in. A truncated URL is useless, so drop an
+        # oversized image_url (and its now-meaningless dimensions) rather than
+        # store a broken value; clamp the text fields to fit. max_length is read
+        # from the model so these stay in sync with the column definitions.
         instance.image_url = meta.get("og:image") or ""
+        image_url_max = instance._meta.get_field("image_url").max_length
+        if image_url_max and len(instance.image_url) > image_url_max:
+            instance.image_url = ""
         try:
             instance.image_width = int(meta["og:image:width"])
-        except (KeyError, ValueError, TypeError):
+        except KeyError, ValueError, TypeError:
             instance.image_width = None
         try:
             instance.image_height = int(meta["og:image:height"])
-        except (KeyError, ValueError, TypeError):
+        except KeyError, ValueError, TypeError:
             instance.image_height = None
-        instance.author_name = meta.get("og:article:author") or ""
-        instance.provider_name = parsed.hostname or ""
+        if not instance.image_url:
+            instance.image_width = None
+            instance.image_height = None
+        author_name_max = instance._meta.get_field("author_name").max_length
+        instance.author_name = (meta.get("og:article:author") or "")[:author_name_max]
+        provider_name_max = instance._meta.get_field("provider_name").max_length
+        instance.provider_name = (parsed.hostname or "")[:provider_name_max]
         instance.provider_url = f"{parsed.scheme}://{parsed.netloc}"
         instance.fetched_at = timezone.now()
         instance.save(
@@ -321,7 +284,17 @@ class PreviewCard(StatorModel):
         }
         return urlunparse(parsed._replace(query=urlencode(filtered, doseq=True)))
 
+    @property
+    def image_proxy_url(self):
+        if not self.image_url:
+            return None
+        return ProxyAbsoluteUrl(
+            f"/proxy/preview_card/{self.pk}/",
+            remote_url=self.image_url,
+        )
+
     def to_mastodon_json(self) -> dict:
+        image_proxy_url = self.image_proxy_url
         return {
             "url": self.url,
             "title": self.title,
@@ -334,14 +307,7 @@ class PreviewCard(StatorModel):
             "html": self.embed_html,
             "width": self.image_width or 0,
             "height": self.image_height or 0,
-            "image": (
-                ProxyAbsoluteUrl(
-                    f"/proxy/preview_card/{self.pk}/",
-                    remote_url=self.image_url,
-                ).absolute
-                if self.image_url
-                else None
-            ),
+            "image": image_proxy_url.absolute if image_proxy_url else None,
             "embed_url": "",
             "blurhash": self.blurhash,
         }

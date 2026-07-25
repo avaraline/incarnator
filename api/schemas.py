@@ -21,16 +21,30 @@ class Application(Schema):
 
     @classmethod
     def from_application(cls, application: api_models.Application) -> "Application":
-        a = application.to_mastodon_json()
-        a["redirect_uri"] = a["redirect_uris"]
-        a["redirect_uris"] = [a["redirect_uri"]]
-        return cls(**a)
+        return cls(**cls._mastodon_json(application))
 
     @classmethod
     def from_application_no_keys(
         cls, application: api_models.Application
     ) -> "Application":
-        return cls(**application.to_mastodon_json(include_client_keys=False))
+        return cls(**cls._mastodon_json(application, include_client_keys=False))
+
+    @staticmethod
+    def _mastodon_json(
+        application: api_models.Application, include_client_keys: bool = True
+    ) -> dict:
+        a = application.to_mastodon_json(include_client_keys=include_client_keys)
+        # redirect_uris is stored as a single string; add_app joins multiple
+        # values with commas while Mastodon clients may send them newline
+        # separated. Split on both so each URI becomes its own list entry.
+        uris = [
+            uri.strip()
+            for uri in a["redirect_uris"].replace(",", "\n").split("\n")
+            if uri.strip()
+        ]
+        a["redirect_uri"] = "\n".join(uris)
+        a["redirect_uris"] = uris
+        return a
 
 
 class CustomEmoji(Schema):

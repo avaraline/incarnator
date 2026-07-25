@@ -3,6 +3,7 @@ import pytest
 
 from activities.models import Post
 from activities.services.search import SearchService
+from users.models import Identity
 from users.models.system_actor import SystemActor
 
 
@@ -74,6 +75,20 @@ def test_search_url_follows_ap_alternate(monkeypatch, config_system):
 
 
 @pytest.mark.django_db
+def test_search_identities_by_domain(identity, identity2):
+    """Searching a bare domain name should return identities on that
+    domain, matched case-insensitively.
+
+    Regression: ``domain__iexact`` raised FieldError as ``iexact``
+    cannot be applied directly to the ForeignKey.
+    """
+    results = SearchService("Example.COM", None).search_identities_handle()
+
+    assert identity in results
+    assert identity2 not in results
+
+
+@pytest.mark.django_db
 def test_search_url_gives_up_when_no_alternate(monkeypatch, config_system):
     """If the response is HTML without an AP alternate hint, search_url
     must give up rather than loop or raise."""
@@ -125,3 +140,42 @@ def test_search_url_does_not_loop_on_self_referential_alternate(
 
     assert SearchService(url, None).search_url() is None
     assert call_count == 1
+
+
+@pytest.mark.django_db
+def test_search_url_handles_list_type(monkeypatch, config_system):
+    """An actor whose JSON-LD "type" is a list (e.g. ActivityPods emits
+    ["Person", "foaf:Person"]) must still be recognised as an identity."""
+    url = "https://pods.example/u/test"
+    response = httpx.Response(
+        200,
+        headers={"Content-Type": "application/activity+json"},
+        json={
+            "@context": [
+                "https://www.w3.org/ns/activitystreams",
+                {"foaf": "http://xmlns.com/foaf/0.1/"},
+            ],
+            "id": url,
+            "type": ["Person", "foaf:Person"],
+            "inbox": f"{url}/inbox",
+            "preferredUsername": "test",
+        },
+        request=httpx.Request("GET", url),
+    )
+
+    def fake_signed_request(self, method, uri, body=None):
+        return response
+
+    monkeypatch.setattr(SystemActor, "signed_request", fake_signed_request)
+
+    captured: dict = {}
+
+    def fake_by_actor_uri(cls, uri, create=False):
+        captured["uri"] = uri
+        return None
+
+    monkeypatch.setattr(Identity, "by_actor_uri", classmethod(fake_by_actor_uri))
+
+    assert SearchService(url, None).search_url() is None
+    # Routed to the identity branch, not dropped as an unknown type
+    assert captured["uri"] == url

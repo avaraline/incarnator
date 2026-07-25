@@ -9,6 +9,8 @@ import urlman
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError, models, transaction
+from django.db.models.functions import Upper
+from django.templatetags.static import static
 from django.utils import timezone
 from lxml import etree
 from pyld.jsonld import JsonLdError
@@ -21,6 +23,7 @@ from core.json import json_from_response
 from core.ld import (
     canonicalise,
     format_ld_date,
+    get_first_concrete_type,
     get_first_image_url,
     get_list,
     media_type_from_filename,
@@ -42,6 +45,11 @@ from users.models.inbox_message import InboxMessage
 from users.models.system_actor import SystemActor
 
 logger = logging.getLogger(__name__)
+
+# Placeholder avatar for local identities with no icon of their own. Resolved
+# through static() so it honours STATIC_URL and manifest hashing -- the served
+# path, unlike a hardcoded one, is whatever collectstatic actually publishes.
+DEFAULT_ICON_STATIC_PATH = "img/avatar.png"
 
 
 class IdentityStates(StateGraph):
@@ -324,7 +332,18 @@ class Identity(StatorModel):
     class Meta:
         verbose_name_plural = "identities"
         unique_together = [("username", "domain")]
-        indexes: list = []  # We need this so Stator can add its own
+        # Non-empty so Stator can append its own state index (see
+        # stator.models.add_stator_indexes). The functional index backs
+        # case-insensitive handle lookups: by_username_and_domain() matches
+        # both columns (exact domain_id), and handle searches match
+        # Upper(username) with Upper(domain_id) filtered on the rows.
+        indexes: list = [
+            models.Index(
+                Upper("username"),
+                models.F("domain"),
+                name="ix_identity_handle_ci",
+            ),
+        ]
 
     class urls(urlman.Urls):
         view = "/@{self.username}@{self.domain_id}/"
@@ -384,7 +403,7 @@ class Identity(StatorModel):
                 remote_url=self.icon_uri,
             )
         else:
-            return AutoAbsoluteUrl("/s/img/avatar.svg")
+            return AutoAbsoluteUrl(static(DEFAULT_ICON_STATIC_PATH))
 
     def local_image_url(self) -> RelativeAbsoluteUrl | None:
         """
@@ -434,18 +453,25 @@ class Identity(StatorModel):
     def calculate_stats(self, save=True):
         if not self.local:
             return
+        from users.models import FollowStates
+
         try:
             latest = self.posts.latest("created").created.date().isoformat()
-        except (ObjectDoesNotExist, AttributeError):
+        except ObjectDoesNotExist, AttributeError:
             latest = None
+        # Match the follow-list endpoints: accepted inbound, active outbound.
         self.stats = {
             "last_status_at": latest,
             "statuses_count": self.posts.count(),
-            "followers_count": self.inbound_follows.count(),
-            "following_count": self.outbound_follows.count(),
+            "followers_count": self.inbound_follows.filter(
+                state=FollowStates.accepted
+            ).count(),
+            "following_count": self.outbound_follows.filter(
+                state__in=FollowStates.group_active()
+            ).count(),
         }
         if save:
-            self.save()
+            self.save(update_fields=["stats"])
 
     def add_alias(self, actor_uri: str):
         if not self.aliases or actor_uri not in self.aliases:
@@ -562,6 +588,8 @@ class Identity(StatorModel):
 
     @classmethod
     def by_actor_uri(cls, uri, create=False, transient=False) -> "Identity":
+        if not uri:
+            raise cls.DoesNotExist("No actor_uri provided")
         try:
             return cls.objects.get(actor_uri=uri)
         except cls.DoesNotExist:
@@ -712,6 +740,12 @@ class Identity(StatorModel):
                 "type": "Image",
                 "mediaType": media_type_from_filename(self.icon_uri),
                 "url": self.icon_uri,
+            }
+        elif self.local and not self.deleted:
+            response["icon"] = {
+                "type": "Image",
+                "mediaType": "image/png",
+                "url": AutoAbsoluteUrl(static(DEFAULT_ICON_STATIC_PATH)).absolute,
             }
         if self.image:
             response["image"] = {
@@ -877,7 +911,7 @@ class Identity(StatorModel):
                     )
                     if template:
                         return template
-            except (httpx.RequestError, SSRFAttemptError, etree.ParseError):
+            except httpx.RequestError, SSRFAttemptError, etree.ParseError:
                 pass
 
         return f"https://{domain}/.well-known/webfinger?resource={{uri}}"
@@ -891,7 +925,7 @@ class Identity(StatorModel):
         domain = handle.split("@")[1].lower()
         try:
             webfinger_url = cls.fetch_webfinger_url(domain)
-        except (ssl.SSLCertVerificationError, SSRFAttemptError):
+        except ssl.SSLCertVerificationError, SSRFAttemptError:
             return None, None
 
         # Go make a Webfinger request
@@ -947,7 +981,7 @@ class Identity(StatorModel):
                     and link.get("rel") == "self"
                 ):
                     return link["href"], data["subject"]
-        except (KeyError, AttributeError):
+        except KeyError, AttributeError:
             # Server returning wrong payload structure
             pass
         return None, None
@@ -1042,7 +1076,7 @@ class Identity(StatorModel):
             )
         except httpx.TimeoutException:
             raise TryAgainLater()
-        except (httpx.RequestError, ssl.SSLCertVerificationError, SSRFAttemptError):
+        except httpx.RequestError, ssl.SSLCertVerificationError, SSRFAttemptError:
             return False
         content_type = response.headers.get("content-type")
         if content_type and "html" in content_type:
@@ -1063,7 +1097,7 @@ class Identity(StatorModel):
         try:
             json_data = json_from_response(response)
             document = canonicalise(json_data, include_security=True)
-        except (ValueError, JsonLdError):
+        except ValueError, JsonLdError:
             # servers with empty or invalid responses are inevitable
             logger.info(
                 "Invalid response fetching actor %s",
@@ -1076,14 +1110,21 @@ class Identity(StatorModel):
         if "type" not in document:
             return False
         self.name = document.get("name")
-        self.profile_uri = document.get("url")
+        # Lemmy and some other implementations omit the top-level "url" (the
+        # actor id is the web profile). Fall back to actor_uri so the profile
+        # link is never empty.
+        self.profile_uri = document.get("url") or self.actor_uri
         self.inbox_uri = document.get("inbox")
         self.outbox_uri = document.get("outbox")
         self.followers_uri = document.get("followers")
         self.following_uri = document.get("following")
         self.featured_collection_uri = document.get("featured")
         self.featured_tags_uri = document.get("featuredTags")
-        self.actor_type = document["type"].lower()
+        # JSON-LD allows a list of types (e.g. ["Person", "foaf:Person"])
+        self.actor_type = (
+            get_first_concrete_type(document["type"], preferred=self.ACTOR_TYPES)
+            or "person"
+        )
         self.shared_inbox_uri = document.get("endpoints", {}).get("sharedInbox")
         self.summary = document.get("summary")
         self.username = document.get("preferredUsername")
@@ -1145,7 +1186,7 @@ class Identity(StatorModel):
             if tag["type"].lower() in ["toot:emoji", "emoji"]:
                 try:
                     Emoji.by_ap_tag(self.domain, tag, create=True)
-                except (KeyError, ValueError):
+                except KeyError, ValueError:
                     pass
         # Mark as fetched
         self.fetched = timezone.now()
@@ -1255,7 +1296,7 @@ class Identity(StatorModel):
             "statuses_count": stats.get("statuses_count", 0),
             "followers_count": stats.get("followers_count", 0),
             "following_count": stats.get("following_count", 0),
-            "hide_collections": not Config.load_identity(self).visible_follows,
+            "hide_collections": not self.config_identity.visible_follows,
         }
         if source:
             privacy_map = {
@@ -1281,9 +1322,7 @@ class Identity(StatorModel):
                     if self.metadata
                     else []
                 ),
-                "privacy": privacy_map[
-                    Config.load_identity(self).default_post_visibility
-                ],
+                "privacy": privacy_map[self.config_identity.default_post_visibility],
                 "sensitive": False,
                 "language": "unk",
                 "follow_requests_count": 0,

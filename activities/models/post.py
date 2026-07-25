@@ -31,6 +31,7 @@ from activities.models.post_types import (
     PostTypeDataDecoder,
     PostTypeDataEncoder,
     QuestionData,
+    vote_value,
 )
 from activities.models.quote_authorization import QuoteAuthorization
 from core.exceptions import ActivityPubFormatError, ActorMismatchError
@@ -39,8 +40,10 @@ from core.json import json_from_response
 from core.ld import (
     canonicalise,
     format_ld_date,
+    get_first_concrete_type,
     get_language,
     get_list,
+    get_str_or_id,
     get_value_or_map,
     parse_ld_date,
 )
@@ -62,6 +65,100 @@ logger = logging.getLogger(__name__)
 # Postgres truncation errors (BookWyrm Quotation objects, for example, send
 # the HTML quotation text under the `quote` key).
 _QUOTE_URI_MAX_LENGTH = 2048
+
+
+def _ap_link(value, preferred_media_type: str | None = None) -> tuple[str | None, dict]:
+    """Return one URL and its Link/Object metadata from an AS url value.
+
+    ActivityStreams permits URL values to be URI strings, embedded Link
+    objects, or arrays of either. Prefer a requested media type (normally
+    text/html for a status permalink), then fall back to the first usable
+    value. The metadata is returned as well so callers can retain dimensions
+    and media type information for icons and attachments.
+    """
+
+    candidates: list[tuple[str, dict]] = []
+
+    def collect(item, inherited: dict | None = None) -> None:
+        if isinstance(item, str):
+            candidates.append((item, inherited or {}))
+            return
+        if isinstance(item, list):
+            for child in item:
+                collect(child, inherited)
+            return
+        if not isinstance(item, dict):
+            return
+
+        # AS Link uses href; Object subclasses usually use url.
+        href = item.get("href")
+        if isinstance(href, str):
+            candidates.append((href, item))
+        nested_url = item.get("url")
+        if nested_url is not None:
+            collect(nested_url, item)
+        if not isinstance(href, str) and nested_url is None:
+            object_id = item.get("id")
+            if isinstance(object_id, str):
+                candidates.append((object_id, item))
+
+    collect(value)
+    if not candidates:
+        return None, {}
+    if preferred_media_type:
+        for url, metadata in candidates:
+            media_type = metadata.get("mediaType")
+            if (
+                isinstance(media_type, str)
+                and media_type.split(";", 1)[0].lower() == preferred_media_type
+            ):
+                return url, metadata
+    return candidates[0]
+
+
+def _natural_language_value(data: dict, key: str) -> str:
+    """Read an AS natural-language field, coalescing JSON-LD list values."""
+
+    try:
+        value = get_value_or_map(data, key, f"{key}Map")
+    except ActivityPubFormatError:
+        return ""
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    return value if isinstance(value, str) else ""
+
+
+def _converted_post_content(data: dict, object_url: str) -> str:
+    """Convert a non-status AS object into Mastodon-compatible status HTML.
+
+    Mastodon's converted-object path keeps the body, title, summary, and a
+    link to the original object in the status content (rather than exposing
+    these object types as a separate client-API entity).
+    """
+
+    content = _natural_language_value(data, "content")
+    name = _natural_language_value(data, "name")
+    summary = _natural_language_value(data, "summary")
+    parts: list[str] = []
+    if content:
+        parts.append(content)
+    if name:
+        # AS name is plain natural-language text, not trusted markup.
+        parts.append(f"<p>{html.escape(strip_tags(name))}</p>")
+    if summary:
+        parts.append(summary)
+    parts.append(
+        f'<p><a href="{html.escape(object_url)}">{html.escape(object_url)}</a></p>'
+    )
+    return "\n".join(parts)
+
+
+def _positive_int(value) -> int | None:
+    try:
+        value = int(value)
+    except TypeError, ValueError:
+        return None
+    return value if value >= 0 else None
 
 
 def _is_quote_uri(value: str) -> bool:
@@ -109,26 +206,39 @@ class PostStates(StateGraph):
 
     edited = State(try_interval=300)
     edited_fanned_out = State(externally_progressed=True)
+    # Open polls: local ones federate throttled tally Updates and close at
+    # expiry; remote ones with local voters get end-of-poll notifications.
+    question_open = State(try_interval=300, attempt_immediately=False)
 
     new.transitions_to(fanned_out)
+    new.transitions_to(question_open)
     fanned_out.transitions_to(deleted_fanned_out)
     fanned_out.transitions_to(deleted)
     fanned_out.transitions_to(edited)
+    fanned_out.transitions_to(question_open)
 
     deleted.transitions_to(deleted_fanned_out)
     edited.transitions_to(edited_fanned_out)
+    edited.transitions_to(question_open)
     edited_fanned_out.transitions_to(edited)
     edited_fanned_out.transitions_to(deleted)
+    edited_fanned_out.transitions_to(question_open)
+    question_open.transitions_to(fanned_out)
+    question_open.transitions_to(edited)
+    question_open.transitions_to(deleted)
+    question_open.transitions_to(deleted_fanned_out)
 
     @classmethod
     def targets_fan_out(cls, post: "Post", type_: str) -> None:
-        # Fan out to each target
-        for follow in post.get_targets():
-            FanOut.objects.create(
-                identity=follow,
-                type=type_,
-                subject_post=post,
-            )
+        # Fan out to each target in bulk to avoid one INSERT round-trip per
+        # follower (state/created defaults are applied the same as create()).
+        FanOut.objects.bulk_create(
+            (
+                FanOut(identity=follow, type=type_, subject_post=post)
+                for follow in post.get_targets()
+            ),
+            batch_size=500,
+        )
         cls.fan_out_to_relay(post, type_)
 
     @classmethod
@@ -138,21 +248,12 @@ class PostStates(StateGraph):
         relay_uris = Relay.active_inbox_uris()
         if not relay_uris:
             return
-        obj = None
-        match type_:
-            case FanOut.Types.post:
-                obj = canonicalise(post.to_create_ap())
-            case FanOut.Types.post_edited:
-                obj = canonicalise(post.to_update_ap())
-            case FanOut.Types.post_deleted:
-                obj = canonicalise(post.to_delete_ap())
+        # to_fan_out_ap attaches the LD signature relay recipients need to
+        # verify the original author independently of the relay's HTTP
+        # signature.
+        obj = post.to_fan_out_ap(type_)
         if not obj:
             return
-        # Attach LD signature so relay recipients can verify the original author
-        # independently of the relay's HTTP signature.
-        obj["signature"] = LDSignature.create_signature(
-            obj, post.author.private_key, post.author.public_key_id
-        )
         for uri in relay_uris:
             try:
                 post.author.signed_request(method="post", uri=uri, body=obj)
@@ -171,7 +272,10 @@ class PostStates(StateGraph):
         ):
             cls.targets_fan_out(instance, FanOut.Types.post)
         instance.ensure_hashtags()
-        _attach_preview_card(instance.pk, instance.content)
+        if instance.type not in instance.CONVERTED_TYPES:
+            _attach_preview_card(instance.pk, instance.content)
+        if cls.needs_question_tracking(instance):
+            return cls.question_open
         return cls.fanned_out
 
     @classmethod
@@ -235,6 +339,8 @@ class PostStates(StateGraph):
                 )
                 conv.last_post = next_post
                 conv.save(update_fields=["last_post", "updated"])
+        # Keep the parent's replies_count accurate after a soft delete.
+        instance.recalculate_parent_stats()
         return cls.deleted_fanned_out
 
     @classmethod
@@ -244,8 +350,87 @@ class PostStates(StateGraph):
         """
         cls.targets_fan_out(instance, FanOut.Types.post_edited)
         instance.ensure_hashtags()
-        _attach_preview_card(instance.pk, instance.content)
+        if instance.type not in instance.CONVERTED_TYPES:
+            _attach_preview_card(instance.pk, instance.content)
+        if cls.needs_question_tracking(instance):
+            question = instance.type_data
+            if instance.local and question.last_distributed_tally != question.tally:
+                # The Update we just fanned out carries the current tallies
+                question.last_distributed_tally = question.tally
+                instance.save()
+            return cls.question_open
         return cls.edited_fanned_out
+
+    @classmethod
+    def needs_question_tracking(cls, instance: "Post") -> bool:
+        """
+        Whether this post should sit in question_open: an unexpired poll
+        that is either local or has local voters to notify at expiry.
+        """
+        from activities.models.post_interaction import PostInteraction
+
+        if instance.type != Post.Types.question or not isinstance(
+            instance.type_data, QuestionData
+        ):
+            return False
+        if instance.type_data.is_expired:
+            return False
+        if instance.local:
+            return True
+        if not instance.type_data.effective_end_time:
+            # A remote poll that never ends has no expiry to track
+            return False
+        return instance.interactions.filter(
+            type=PostInteraction.Types.vote, identity__local=True
+        ).exists()
+
+    @classmethod
+    def handle_question_open(cls, instance: "Post"):
+        """
+        Watches an open poll: federates throttled tally Updates for local
+        polls, and at expiry sends the final Update (now carrying `closed`)
+        and notifies the author and local voters.
+        """
+        from activities.models.timeline_event import TimelineEvent
+
+        with transaction.atomic():
+            # Lock the row so concurrent vote handling can't clobber the
+            # type_data we are about to save
+            post = Post.objects.select_for_update().get(pk=instance.pk)
+            if post.type != Post.Types.question or not isinstance(
+                post.type_data, QuestionData
+            ):
+                return cls.fanned_out
+            question = post.type_data
+            if not question.is_expired:
+                if (
+                    post.local
+                    and not question.hide_totals
+                    and question.last_distributed_tally != question.tally
+                ):
+                    cls.targets_fan_out(post, FanOut.Types.post_edited)
+                    question.last_distributed_tally = question.tally
+                    post.save()
+                return None
+            # The poll has ended
+            if post.local:
+                # Final Update reveals hidden totals and carries `closed`
+                cls.targets_fan_out(post, FanOut.Types.post_edited)
+                question.last_distributed_tally = question.tally
+                post.save()
+                TimelineEvent.add_poll_ended(post.author, post)
+                for voter in post.question_local_voters():
+                    TimelineEvent.add_poll_ended(voter, post)
+                return cls.fanned_out
+        # Remote poll: refresh final tallies outside the row lock
+        if not instance.refresh_question_from_remote():
+            logger.warning(
+                "Could not refresh final poll tallies for %s",
+                instance.object_uri,
+            )
+        for voter in instance.question_local_voters():
+            TimelineEvent.add_poll_ended(voter, instance)
+        return cls.fanned_out
 
 
 class PostQuerySet(models.QuerySet):
@@ -398,6 +583,19 @@ class Post(StatorModel):
         page = "Page"
         question = "Question"
         video = "Video"
+
+    # Mastodon calls these "converted" objects: they become ordinary statuses
+    # for client/API purposes, while their complete AS object remains available
+    # in type_data for lossless handling.
+    CONVERTED_TYPES = frozenset(
+        {
+            Types.page,
+            Types.image,
+            Types.audio,
+            Types.video,
+            Types.event,
+        }
+    )
 
     id = models.BigIntegerField(primary_key=True, default=Snowflake.generate_post)
 
@@ -591,6 +789,11 @@ class Post(StatorModel):
     def _safe_content_note(self, *, local: bool = True):
         return ContentRenderer(local=local).render_post(self.content, self)
 
+    @property
+    def safe_content_note_local(self):
+        """Render just the note body for request-aware typed templates."""
+        return self._safe_content_note(local=True)
+
     def _safe_content_question(self, *, local: bool = True):
         if local:
             context = {
@@ -616,7 +819,35 @@ class Post(StatorModel):
             context,
         )
 
+    @property
+    def converted_preview_card(self):
+        if self.type not in self.CONVERTED_TYPES or not self.preview_card_id:
+            return None
+        return self.preview_card if self.preview_card.state == "fetched" else None
+
+    @property
+    def article_cover_url(self) -> str | None:
+        """Lead image URL for an Article, if its AS object carries one.
+
+        The AS ``image`` may be a URL string, an Image/Link object, or an array
+        of either; normalize to a single http(s) URL for the web article view.
+        Returns None for non-Article posts or when no usable image is present.
+        This is used by the web templates only and is not folded into the
+        Mastodon API status content.
+        """
+        if self.type != self.Types.article:
+            return None
+        obj = self.type_data.get("object") if isinstance(self.type_data, dict) else None
+        if not isinstance(obj, dict):
+            return None
+        url, _ = _ap_link(obj.get("image"))
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            return url
+        return None
+
     def safe_content(self, *, local: bool = True):
+        if self.type in self.CONVERTED_TYPES:
+            return self._safe_content_note(local=local)
         func = getattr(
             self, f"_safe_content_{self.type.lower()}", self._safe_content_typed
         )
@@ -719,6 +950,9 @@ class Post(StatorModel):
             if question:
                 post.type = question["type"]
                 post.type_data = PostTypeData(root=question).root
+                if isinstance(post.type_data, QuestionData):
+                    # Baseline for detecting when a tally Update is due
+                    post.type_data.last_distributed_tally = post.type_data.tally
             post.save()
             # Assign to conversation if this is a direct message
             if visibility == cls.Visibilities.mentioned:
@@ -738,8 +972,12 @@ class Post(StatorModel):
         attachments: list | None = None,
         attachment_attributes: list | None = None,
         language: str | None = None,
+        question: dict | None = None,
     ):
         with transaction.atomic():
+            # Serialize against concurrent vote handling, which also
+            # rewrites type_data
+            Post.objects.select_for_update().get(pk=self.pk)
             # Strip all HTML and apply linebreaks filter
             parser = FediverseHtmlParser(linebreaks_filter(content), find_hashtags=True)
             self.content = parser.html
@@ -756,6 +994,8 @@ class Post(StatorModel):
             self.mentions.set(self.mentions_from_content(content, self.author))
             self.emojis.set(Emoji.emojis_from_content(content, None))
             self.attachments.set(attachments or [])
+            if question is not None or self.type == Post.Types.question:
+                self.apply_question_edit(question)
             self.save()
 
             for attrs in attachment_attributes or []:
@@ -768,6 +1008,34 @@ class Post(StatorModel):
                 attachment.save()
 
             self.transition_perform(PostStates.edited)
+
+    def apply_question_edit(self, question: dict | None) -> None:
+        """
+        Applies a poll change during a local post edit: adds, replaces or
+        removes the poll. Changing the options or the mode invalidates all
+        previous votes (matching Mastodon).
+        """
+        from activities.models.post_interaction import PostInteraction
+
+        if question is None:
+            # The poll was removed by the edit
+            self.type = Post.Types.note
+            self.type_data = None
+            self.interactions.filter(type=PostInteraction.Types.vote).delete()
+            return
+        old = self.type_data if isinstance(self.type_data, QuestionData) else None
+        new_data = PostTypeData(root=question).root
+        significantly_changed = (
+            old is None
+            or old.mode != new_data.mode
+            or [option.name for option in (old.options or [])]
+            != [option.name for option in (new_data.options or [])]
+        )
+        if significantly_changed:
+            self.interactions.filter(type=PostInteraction.Types.vote).delete()
+        self.type = Post.Types.question
+        self.type_data = new_data
+        self.calculate_type_data(save=False)
 
     @classmethod
     def mentions_from_content(cls, content, author) -> set[Identity]:
@@ -829,29 +1097,106 @@ class Post(StatorModel):
         if save:
             self.save()
 
+    def recalculate_parent_stats(self) -> None:
+        """If this is a reply, refresh the parent's cached stats (replies_count)."""
+        parent = self.in_reply_to_post()
+        if parent:
+            parent.calculate_stats()
+
     def calculate_type_data(self, save=True):
         """
         Recalculate type_data (used mostly for poll votes)
         """
-        from activities.models import PostInteraction
+        from activities.models import PostInteraction, PostInteractionStates
 
         if self.local and isinstance(self.type_data, QuestionData):
+            active_votes = self.interactions.filter(
+                type=PostInteraction.Types.vote,
+                state__in=PostInteractionStates.group_active(),
+            )
             self.type_data.voter_count = (
-                self.interactions.filter(
-                    type=PostInteraction.Types.vote,
-                )
-                .values("identity")
-                .distinct()
-                .count()
+                active_votes.values("identity").distinct().count()
             )
 
             for option in self.type_data.options:
-                option.votes = self.interactions.filter(
-                    type=PostInteraction.Types.vote,
-                    value=option.name,
+                option.votes = active_votes.filter(
+                    value=vote_value(option.name),
                 ).count()
         if save:
             self.save()
+
+    def question_local_voters(self) -> list[Identity]:
+        """
+        Local identities that voted on this poll (for end-of-poll notifications)
+        """
+        from activities.models import PostInteraction, PostInteractionStates
+
+        return list(
+            Identity.objects.filter(
+                interactions__post=self,
+                interactions__type=PostInteraction.Types.vote,
+                interactions__state__in=PostInteractionStates.group_active(),
+                local=True,
+            ).distinct()
+        )
+
+    def refresh_question_from_remote(self) -> "Post | None":
+        """
+        Re-fetches a remote poll from its origin to pick up fresh tallies.
+        Returns the updated Post, or None if it could not be refreshed.
+        """
+        if self.local or self.type != Post.Types.question:
+            return None
+        try:
+            response = SystemActor().signed_request(method="get", uri=self.object_uri)
+        except (
+            httpx.HTTPError,
+            ssl.SSLCertVerificationError,
+            ValueError,
+            TypeError,
+        ):
+            return None
+        if response.status_code >= 400:
+            return None
+        try:
+            json_data = json_from_response(response)
+            ap_data = canonicalise(json_data, include_security=True, outbound=False)
+        except json.JSONDecodeError, ValueError, JsonLdError:
+            return None
+        # Only accept the document that actually lives at this URI. GETs follow
+        # redirects, and by_ap applies the update to whatever `id` it is handed,
+        # so without this a host we hold a poll from could hand back another
+        # server's object id and rewrite our copy of that post.
+        if ap_data.get("id") != self.object_uri:
+            return None
+        try:
+            post = Post.by_ap(ap_data, create=False, update=True)
+        except (
+            ValueError,
+            ActivityPubFormatError,
+            ActorMismatchError,
+            Post.DoesNotExist,
+        ):
+            return None
+        # by_ap stamped type_data.last_fetched while applying the update
+        return post
+
+    def refresh_question_if_stale(self) -> "Post":
+        """
+        Re-fetches a remote poll when its tallies may be out of date:
+        more than a minute since the last fetch, and not yet fetched
+        after the poll ended (final results).
+        """
+        question = self.type_data
+        if self.local or not isinstance(question, QuestionData):
+            return self
+        if question.last_fetched:
+            if (timezone.now() - question.last_fetched).total_seconds() < 60:
+                return self
+            end_time = question.effective_end_time
+            if end_time and question.last_fetched >= end_time:
+                return self
+        return self.refresh_question_from_remote() or self
 
     ### ActivityPub (outbound) ###
 
@@ -878,17 +1223,25 @@ class Post(StatorModel):
                 self.language: value["content"],
             }
         if self.type == Post.Types.question and self.type_data:
-            value[self.type_data.mode] = [
+            question = self.type_data
+            expired = question.is_expired
+            totals_hidden = question.hide_totals and not expired
+            value[question.mode] = [
                 {
                     "name": option.name,
                     "type": option.type,
-                    "replies": {"type": "Collection", "totalItems": option.votes},
+                    "replies": {
+                        "type": "Collection",
+                        "totalItems": 0 if totals_hidden else option.votes,
+                    },
                 }
-                for option in self.type_data.options
+                for option in question.options or []
             ]
-            value["toot:votersCount"] = self.type_data.voter_count
-            if self.type_data.end_time:
-                value["endTime"] = format_ld_date(self.type_data.end_time)
+            value["toot:votersCount"] = question.voter_count
+            if question.end_time:
+                value["endTime"] = format_ld_date(question.end_time)
+            if expired and question.effective_end_time:
+                value["closed"] = format_ld_date(question.effective_end_time)
         if self.summary:
             value["summary"] = self.summary
         if self.in_reply_to:
@@ -999,11 +1352,18 @@ class Post(StatorModel):
         Returns the AP JSON to update this object
         """
         object = self.to_ap()
+        # Each revision needs its own activity ID - some servers (e.g.
+        # Pleroma) deduplicate activities by ID, and polls now send
+        # several Updates (tallies, closing) over their lifetime.
+        if self.updated:
+            update_id = f"{self.object_uri}#updates/{int(self.updated.timestamp())}"
+        else:
+            update_id = self.object_uri + "#update"
         return {
             "to": object.get("to", []),
             "cc": object.get("cc", []),
             "type": "Update",
-            "id": self.object_uri + "#update",
+            "id": update_id,
             "actor": self.author.actor_uri,
             "object": object,
         }
@@ -1021,6 +1381,36 @@ class Post(StatorModel):
             "actor": self.author.actor_uri,
             "object": object,
         }
+
+    def to_fan_out_ap(self, type_: str) -> dict | None:
+        """
+        Returns the canonicalised AP document for delivering this post to a
+        remote inbox, given a FanOut type.
+
+        Public/unlisted local posts carry an LD signature so receivers can
+        authenticate the author independently of the delivery HTTP signature
+        and pass the activity on (relay distribution, reply forwarding).
+        Private posts are deliberately left unsigned to keep them repudiable.
+        """
+        match type_:
+            case FanOut.Types.post:
+                document = canonicalise(self.to_create_ap())
+            case FanOut.Types.post_edited:
+                document = canonicalise(self.to_update_ap())
+            case FanOut.Types.post_deleted:
+                document = canonicalise(self.to_delete_ap())
+            case _:
+                return None
+        if (
+            self.local
+            and self.visibility
+            in [Post.Visibilities.public, Post.Visibilities.unlisted]
+            and self.author.private_key
+        ):
+            document["signature"] = LDSignature.create_signature(
+                document, self.author.private_key, self.author.public_key_id
+            )
+        return document
 
     def get_targets(self) -> Iterable[Identity]:
         """
@@ -1146,6 +1536,21 @@ class Post(StatorModel):
         return value if isinstance(value, str) else None
 
     @classmethod
+    def _primary_post_type(cls, value):
+        """Select the Takahē post type from an AS type string or array."""
+
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            strings = [item for item in value if isinstance(item, str)]
+            for supported_type in cls.Types.values:
+                if supported_type in strings:
+                    return supported_type
+            if strings:
+                return strings[0]
+        return None
+
+    @classmethod
     def by_ap(cls, data, create=False, update=False, fetch_author=False) -> "Post":
         """
         Retrieves a Post instance by its ActivityPub JSON object.
@@ -1161,6 +1566,7 @@ class Post(StatorModel):
             # ``[author_person, blog_group]`` for blog posts; the author
             # is conventionally first, so we take the head.
             data["attributedTo"] = cls._primary_attributed_to(data.get("attributedTo"))
+            data["type"] = cls._primary_post_type(data.get("type"))
             # Ensure data has the primary fields of all Posts
             if (
                 not isinstance(data["id"], str)
@@ -1221,26 +1627,44 @@ class Post(StatorModel):
                 raise cls.DoesNotExist(f"No post with ID {data['id']}", data)
         if update or created:
             post.type = data["type"]
-            post.url = data.get("url", data["id"])
+            post.url, _ = _ap_link(data.get("url"), preferred_media_type="text/html")
+            post.url = post.url or data["id"]
             if post.type == cls.Types.question:
                 post.type_data = PostTypeData(root=data).root
+                if not post.local and isinstance(post.type_data, QuestionData):
+                    # Fresh data from the origin counts as a fetch, so
+                    # a first API view doesn't immediately re-fetch it
+                    post.type_data.last_fetched = timezone.now()
             elif post.type == cls.Types.article:
                 # Preserve the full AS Article (name, summary, source, url,
                 # tags, etc.) so the Post-only renderer can show a title-card
                 # teaser without a local Article row.
                 post.type_data = {"object": data}
-            try:
-                # apparently sometimes posts (Pages?) in the fediverse
-                # don't have content, but this shouldn't be a total failure
-                post.content = get_value_or_map(data, "content", "contentMap") or ""
-            except ActivityPubFormatError as err:
-                logger.warning("%s on %s", err, post.url)
-                post.content = ""
-            # Document types have names, not summaries
-            post.summary = data.get("summary") or data.get("name")
-            if not post.content and post.summary:
-                post.content = post.summary
+            elif post.type in cls.CONVERTED_TYPES:
+                # Keep every field, including Event times/location and media
+                # metadata, while presenting the object as a normal status to
+                # Mastodon clients.
+                post.type_data = {"object": data}
+            else:
+                post.type_data = None
+            if post.type in cls.CONVERTED_TYPES:
+                post.content = _converted_post_content(data, post.url)
+                # Mastodon includes a converted object's summary in its status
+                # text and does not expose it as the status content warning.
                 post.summary = None
+            else:
+                try:
+                    # Some fediverse objects do not have content; this should
+                    # not make the whole activity fail.
+                    post.content = get_value_or_map(data, "content", "contentMap") or ""
+                except ActivityPubFormatError as err:
+                    logger.warning("%s on %s", err, post.url)
+                    post.content = ""
+                # Document types have names, not summaries.
+                post.summary = data.get("summary") or data.get("name")
+                if not post.content and post.summary:
+                    post.content = post.summary
+                    post.summary = None
             post.sensitive = data.get("sensitive", False)
             post.published = parse_ld_date(data.get("published")) or timezone.now()
             post.edited = parse_ld_date(data.get("updated"))
@@ -1307,7 +1731,7 @@ class Post(StatorModel):
                     try:
                         emoji = Emoji.by_ap_tag(post.author.domain, tag, create=True)
                         post.emojis.add(emoji)
-                    except (KeyError, ValueError):
+                    except KeyError, ValueError:
                         pass
                 else:
                     # Various ActivityPub implementations and proposals introduced tag
@@ -1330,31 +1754,38 @@ class Post(StatorModel):
             # These have no IDs, so we have to wipe them each time
             post.attachments.all().delete()
             for attachment in get_list(data, "attachment"):
+                if not isinstance(attachment, dict):
+                    continue
                 if "url" not in attachment and "href" in attachment:
                     # Links have hrefs, while other Objects have urls
                     attachment["url"] = attachment["href"]
+                attachment_url, link_metadata = _ap_link(attachment.get("url"))
                 if "focalPoint" in attachment:
                     try:
                         focal_x, focal_y = attachment["focalPoint"]
-                    except (ValueError, TypeError):
+                    except ValueError, TypeError:
                         focal_x, focal_y = None, None
                 else:
                     focal_x, focal_y = None, None
-                mimetype = attachment.get("mediaType")
+                mimetype = attachment.get("mediaType") or link_metadata.get("mediaType")
                 if not mimetype or not isinstance(mimetype, str):
-                    if "url" not in attachment:
+                    if not attachment_url:
                         raise ActivityPubFormatError(
                             f"No URL present on attachment in {post.url}"
                         )
-                    mimetype, _ = mimetypes.guess_type(attachment["url"])
+                    mimetype, _ = mimetypes.guess_type(attachment_url)
                     if not mimetype:
                         mimetype = "application/octet-stream"
+                if not attachment_url:
+                    raise ActivityPubFormatError(
+                        f"No URL present on attachment in {post.url}"
+                    )
                 post.attachments.create(
-                    remote_url=attachment["url"],
+                    remote_url=attachment_url,
                     mimetype=mimetype,
-                    name=attachment.get("name"),
-                    width=attachment.get("width"),
-                    height=attachment.get("height"),
+                    name=attachment.get("name") or attachment.get("summary"),
+                    width=_positive_int(attachment.get("width")),
+                    height=_positive_int(attachment.get("height")),
                     blurhash=attachment.get("blurhash"),
                     focal_x=focal_x,
                     focal_y=focal_y,
@@ -1365,6 +1796,9 @@ class Post(StatorModel):
                 # if we don't commit the transaction here, there's a chance
                 # the parent fetch below goes into an infinite loop
                 post.save()
+
+            if post.type in cls.CONVERTED_TYPES:
+                post._sync_converted_preview_card(data)
 
             # Assign to conversation if this is a direct message
             if post.visibility == Post.Visibilities.mentioned:
@@ -1419,6 +1853,8 @@ class Post(StatorModel):
         Gets the post by URI - either looking up locally, or fetching
         from the other end if it's not here.
         """
+        if not object_uri:
+            raise cls.DoesNotExist("No object_uri provided")
         try:
             return cls.objects.get(object_uri=object_uri)
         except cls.DoesNotExist:
@@ -1465,6 +1901,53 @@ class Post(StatorModel):
                 return post
             else:
                 raise cls.DoesNotExist(f"Cannot find Post with URI {object_uri}")
+
+    @classmethod
+    def refresh_from_origin(cls, object_uri: str) -> "Post | None":
+        """
+        Re-fetches a remote post from its origin server and updates our
+        copy, deleting the copy if the origin reports it gone (404/410 or
+        a Tombstone). Used when a third party (e.g. an announcing group)
+        tells us about an edit or deletion we cannot authenticate directly.
+
+        Returns the refreshed post, or None if it is gone or unknown.
+        Leaves the copy untouched when the origin cannot be reached.
+        """
+        try:
+            post = cls.objects.get(object_uri=object_uri)
+        except cls.DoesNotExist:
+            return None
+        if post.local:
+            return post
+        try:
+            response = SystemActor().signed_request(method="get", uri=object_uri)
+        except (
+            httpx.HTTPError,
+            ssl.SSLCertVerificationError,
+            ValueError,
+            TypeError,
+        ):
+            return post
+        if response.status_code in [404, 410]:
+            post.delete()
+            return None
+        if response.status_code >= 400:
+            return post
+        try:
+            json_data = json_from_response(response)
+            ap_data = canonicalise(json_data, include_security=True, outbound=False)
+        except json.JSONDecodeError, ValueError, JsonLdError:
+            return post
+        if str(ap_data.get("type", "")).lower() == "tombstone":
+            post.delete()
+            return None
+        # Only accept the document that actually lives at this URI
+        if ap_data.get("id") != object_uri:
+            return post
+        try:
+            return cls.by_ap(ap_data, create=False, update=True)
+        except cls.DoesNotExist, ActivityPubFormatError, ActorMismatchError:
+            return post
 
     MAX_ANCESTOR_FETCH_DEPTH = 20
 
@@ -1577,6 +2060,127 @@ class Post(StatorModel):
             post.delete()
 
     @classmethod
+    def handle_announced_activity_ap(cls, data):
+        """
+        Handles an Announce whose object is itself an activity
+        (Create/Update/Delete), as sent by group actors relaying their
+        members' activities to followers (Lemmy communities, Guppe, etc).
+
+        The embedded activity is authenticated only by the announcing
+        server, whose actor is generally not the inner author, so the
+        embedded copy is never ingested directly: content is always
+        dereferenced from (or verified against) its origin server.
+        """
+        from activities.models import PostInteraction
+
+        inner = data.get("object")
+        if not isinstance(inner, dict):
+            return
+        inner_type = get_first_concrete_type(inner.get("type"))
+        if not inner_type:
+            return
+        object_uri = get_str_or_id(inner.get("object"))
+        if not object_uri or "://" not in object_uri:
+            return
+        match inner_type:
+            case "create":
+                try:
+                    post = cls.by_object_uri(object_uri, fetch=True)
+                except cls.DoesNotExist:
+                    return
+                if post.local:
+                    return
+                # Replies (e.g. Lemmy comments) are only ingested so they
+                # thread under their parent; boosting each one onto
+                # followers' timelines would be far too noisy. Top-level
+                # objects surface as a boost by the announcing group,
+                # exactly like a bare Announce of the object would.
+                if not post.in_reply_to and data.get("id") and data.get("actor"):
+                    PostInteraction.handle_ap(
+                        {
+                            "id": data["id"],
+                            "type": "Announce",
+                            "actor": data["actor"],
+                            "object": object_uri,
+                            "published": data.get("published")
+                            or inner.get("published"),
+                        }
+                    )
+            case "update":
+                # Only refresh content we already hold; an update for an
+                # unknown object is not worth a fetch as nobody here has
+                # seen it.
+                cls.refresh_from_origin(object_uri)
+            case "delete":
+                # We cannot authenticate a relayed delete, but the origin
+                # can confirm it: refresh deletes our copy on 404/410 or
+                # Tombstone.
+                cls.refresh_from_origin(object_uri)
+
+    @classmethod
+    def forward_activity_ap(cls, message: dict, raw_document: dict | None) -> None:
+        """
+        AP inbox forwarding (spec 7.1.2): when an LD-signed remote activity
+        concerns a reply to a local user's post, re-deliver the original
+        document to that user's remote followers, so every server watching
+        the thread sees the reply (and its edits/deletes) even though the
+        origin server does not know those followers.
+        """
+        if not isinstance(raw_document, dict) or "signature" not in raw_document:
+            return
+        object_uri = get_str_or_id(message.get("object"))
+        if not object_uri:
+            return
+        try:
+            post = cls.objects.select_related("author", "author__domain").get(
+                object_uri=object_uri
+            )
+        except cls.DoesNotExist:
+            return
+        if post.local:
+            return
+        # Only the author's own activities about their post are forwarded
+        if message.get("actor") != post.author.actor_uri:
+            return
+        if post.visibility not in [
+            cls.Visibilities.public,
+            cls.Visibilities.unlisted,
+        ]:
+            return
+        parent = post.in_reply_to_post()
+        if parent is None or not parent.local or not parent.author.local:
+            return
+        # Target the thread author's remote followers, deduplicated by
+        # shared inbox, skipping the origin server (it already has it)
+        origin_domain_id = post.author.domain_id
+        targets = []
+        seen_shared_inboxes = set()
+        for follow in (
+            parent.author.inbound_follows.filter(state__in=FollowStates.group_active())
+            .exclude(source__state=IdentityStates.connection_issue)
+            .select_related("source")
+        ):
+            target = follow.source
+            if target.local or target.domain_id == origin_domain_id:
+                continue
+            if target.shared_inbox_uri:
+                if target.shared_inbox_uri in seen_shared_inboxes:
+                    continue
+                seen_shared_inboxes.add(target.shared_inbox_uri)
+            targets.append(target)
+        FanOut.objects.bulk_create(
+            (
+                FanOut(
+                    identity=target,
+                    type=FanOut.Types.forward,
+                    subject_document=raw_document,
+                )
+                for target in targets
+            ),
+            batch_size=500,
+        )
+
+    @classmethod
     def handle_quote_request_ap(cls, data):
         """
         Handles an incoming QuoteRequest (FEP-044f).
@@ -1660,7 +2264,7 @@ class Post(StatorModel):
                 cls.by_object_uri(uri, fetch=True, fetch_depth=depth)
             else:
                 logger.warning("Skipping fetch for non-HTTP URI: %s", uri)
-        except (cls.DoesNotExist, KeyError):
+        except cls.DoesNotExist, KeyError:
             pass
 
     MAX_FETCH_REPLIES = 50
@@ -1680,7 +2284,7 @@ class Post(StatorModel):
 
         try:
             response = SystemActor().signed_request(method="get", uri=replies_uri)
-        except (httpx.HTTPError, ssl.SSLCertVerificationError, ValueError):
+        except httpx.HTTPError, ssl.SSLCertVerificationError, ValueError:
             logger.warning("Failed to fetch replies collection: %s", replies_uri)
             return
 
@@ -1694,7 +2298,7 @@ class Post(StatorModel):
 
         try:
             collection = json_from_response(response)
-        except (ValueError, KeyError):
+        except ValueError, KeyError:
             logger.warning("Invalid JSON from replies collection: %s", replies_uri)
             return
 
@@ -1732,22 +2336,93 @@ class Post(StatorModel):
     ### OpenGraph API ###
 
     def to_opengraph_dict(self) -> dict:
+        card = self.converted_preview_card
+        title = f"{self.author.name} (@{self.author.handle})"
+        description = self.summary or self.safe_content_local()
+        image_url = self.author.local_icon_url().absolute
+        image_height = 85
+        image_width = 85
+        if card:
+            title = card.title or title
+            description = card.description or description
+            if card.image_proxy_url:
+                image_url = card.image_proxy_url.absolute
+                image_height = card.image_height or 85
+                image_width = card.image_width or 85
         return {
-            "og:title": f"{self.author.name} (@{self.author.handle})",
+            "og:title": title,
             "og:type": "article",
             "og:published_time": (self.published or self.created).isoformat(),
             "og:modified_time": (
                 self.edited or self.published or self.created
             ).isoformat(),
-            "og:description": (self.summary or self.safe_content_local()),
-            "og:image:url": self.author.local_icon_url().absolute,
-            "og:image:height": 85,
-            "og:image:width": 85,
+            "og:description": description,
+            "og:image:url": image_url,
+            "og:image:height": image_height,
+            "og:image:width": image_width,
         }
+
+    def _sync_converted_preview_card(self, data: dict) -> None:
+        """Expose converted-object metadata, including icon, as a card."""
+
+        from activities.models.preview_card import PreviewCard, PreviewCardStates
+
+        card_url = self.url or self.object_uri
+        if not card_url or not card_url.startswith(("https://", "http://")):
+            return
+
+        icon_url, icon = _ap_link(data.get("icon"))
+        if icon_url and (
+            not icon_url.startswith(("https://", "http://"))
+            or len(icon_url) > PreviewCard._meta.get_field("image_url").max_length
+        ):
+            icon_url = None
+
+        parsed_url = urlparse(card_url)
+        provider_url = (
+            f"{parsed_url.scheme}://{parsed_url.netloc}" if parsed_url.netloc else ""
+        )
+        card_type = PreviewCard.CardTypes.link
+        if self.type == self.Types.image:
+            card_type = PreviewCard.CardTypes.photo
+        elif self.type == self.Types.video:
+            card_type = PreviewCard.CardTypes.video
+
+        title = strip_tags(_natural_language_value(data, "name"))
+        description = strip_tags(
+            _natural_language_value(data, "summary")
+            or _natural_language_value(data, "content")
+        )
+        now = timezone.now()
+        card, _ = PreviewCard.objects.update_or_create(
+            url=card_url,
+            defaults={
+                "title": title,
+                "description": description,
+                "card_type": card_type,
+                "provider_name": parsed_url.hostname or "",
+                "provider_url": provider_url,
+                "image_url": icon_url or "",
+                "image_width": _positive_int(icon.get("width")),
+                "image_height": _positive_int(icon.get("height")),
+                "fetched_at": now,
+                "last_referenced_at": now,
+                "state": PreviewCardStates.fetched,
+            },
+        )
+        if self.preview_card_id != card.pk:
+            type(self).objects.filter(pk=self.pk).update(preview_card=card)
+            self.preview_card = card
 
     ### Mastodon API ###
 
-    def to_mastodon_json(self, interactions=None, bookmarks=None, identity=None):
+    def to_mastodon_json(
+        self,
+        interactions=None,
+        bookmarks=None,
+        identity=None,
+        include_quoted_status: bool = True,
+    ):
         reply_parent = None
         domain = identity.domain.uri_domain if identity else settings.MAIN_DOMAIN
         if self.in_reply_to:
@@ -1825,7 +2500,7 @@ class Post(StatorModel):
             if self.application
             else None,
         }
-        if self.quote_url:
+        if self.quote_url and include_quoted_status:
             quoted_post = (
                 Post.objects.filter(object_uri=self.quote_url)
                 .select_related("author")
@@ -1834,7 +2509,9 @@ class Post(StatorModel):
             if quoted_post:
                 value["quote"] = {
                     "state": "accepted",
-                    "quoted_status": quoted_post.to_mastodon_json(identity=identity),
+                    "quoted_status": quoted_post.to_mastodon_json(
+                        identity=identity, include_quoted_status=False
+                    ),
                 }
                 value["quote_id"] = str(quoted_post.pk)
                 value["quoted_status_id"] = str(quoted_post.pk)
@@ -1854,6 +2531,10 @@ def post_created(sender, instance: Post, created, **kwargs):
 
 def post_deleted(sender, instance: Post, **kwargs):
     instance.author.calculate_stats()
+    # Hard deletes (incoming AP Delete, prune, admin) bypass handle_deleted;
+    # skip soft-deleted posts whose parent was already recalculated there.
+    if instance.state != PostStates.deleted_fanned_out:
+        instance.recalculate_parent_stats()
 
 
 post_save.connect(post_created, sender=Post, dispatch_uid="activities.post.created")

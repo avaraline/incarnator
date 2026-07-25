@@ -103,29 +103,25 @@ def client_with_user(client, user):
 
 
 @pytest.fixture
-@pytest.mark.django_db
-def user() -> User:
+def user(db) -> User:
     return User.objects.create(email="test@example.com")
 
 
 @pytest.fixture
-@pytest.mark.django_db
-def domain() -> Domain:
+def domain(db) -> Domain:
     return Domain.objects.create(
         domain="example.com", local=True, public=True, state="updated"
     )
 
 
 @pytest.fixture
-@pytest.mark.django_db
-def domain2() -> Domain:
+def domain2(db) -> Domain:
     return Domain.objects.create(
         domain="example2.com", local=True, public=True, state="updated"
     )
 
 
 @pytest.fixture
-@pytest.mark.django_db
 def identity_factory(user, domain, keypair):
     """
     Factory for creating identities with custom parameters
@@ -154,7 +150,6 @@ def identity_factory(user, domain, keypair):
 
 
 @pytest.fixture
-@pytest.mark.django_db
 def identity(identity_factory) -> Identity:
     """
     Creates a basic test identity with a user and domain.
@@ -163,7 +158,6 @@ def identity(identity_factory) -> Identity:
 
 
 @pytest.fixture
-@pytest.mark.django_db
 def identity2(user, domain2) -> Identity:
     """
     Creates a basic test identity with a user and domain.
@@ -197,8 +191,7 @@ def other_identity(user, domain) -> Identity:
 
 
 @pytest.fixture
-@pytest.mark.django_db
-def remote_identity() -> Identity:
+def remote_identity(db) -> Identity:
     """
     Creates a basic remote test identity with a domain.
     """
@@ -218,8 +211,7 @@ def remote_identity() -> Identity:
 
 
 @pytest.fixture
-@pytest.mark.django_db
-def remote_identity2() -> Identity:
+def remote_identity2(db) -> Identity:
     """
     Creates a basic remote test identity with a domain.
     """
@@ -235,7 +227,6 @@ def remote_identity2() -> Identity:
 
 
 @pytest.fixture
-@pytest.mark.django_db
 def api_token(identity) -> Token:
     """
     Creates an API application, an identity, and a token for that identity

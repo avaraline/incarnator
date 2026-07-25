@@ -92,7 +92,24 @@ server {
         # Proxy the remote file through to the client
         proxy_pass $takahe_realuri;
         proxy_ssl_server_name on;
+        # Fail fast on arbitrary remote hosts so proxy_cache_use_stale
+        # can kick in
+        proxy_connect_timeout 15s;
         add_header X-Takahe-Accel "HIT";
+
+        # Remote origins may reply with Cache-Control: private, Vary or
+        # Set-Cookie, which would prevent nginx from storing the response;
+        # ignore them so proxy_cache_valid below applies, and hide them so
+        # browsers/CDNs can cache the proxied copy. X-Accel-* headers from
+        # untrusted remote servers must not be honored either.
+        proxy_ignore_headers Cache-Control Expires Set-Cookie Vary X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+        proxy_hide_header Cache-Control;
+        proxy_hide_header Expires;
+        proxy_hide_header Set-Cookie;
+        proxy_hide_header Vary;
+        # add_header deliberately skips 4xx/5xx, so error passthroughs are
+        # never marked cacheable to browsers
+        add_header Cache-Control "public, max-age=1209600";
 
         # Cache these responses too
         proxy_cache takahe;
@@ -101,8 +118,12 @@ server {
         proxy_cache_key $takahe_realuri;
         proxy_cache_valid 200 304 720h;
         proxy_cache_valid 301 307 12h;
-        proxy_cache_valid 500 502 503 504 0s;
+        proxy_cache_valid 500 501 502 503 504 505 507 508 0s;
         proxy_cache_valid any 72h;
+        # Serve a stale copy instead of the error when the remote is down,
+        # and refresh expired entries in the background instead of blocking
+        proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
+        proxy_cache_background_update on;
         add_header X-Cache $upstream_cache_status;
     }
 

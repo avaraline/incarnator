@@ -8,8 +8,8 @@ from django.utils import timezone
 from stator.models import State, StateField, StateGraph, StatorModel
 
 from activities.models.fan_out import FanOut
-from activities.models.post import Post
-from activities.models.post_types import QuestionData
+from activities.models.post import Post, PostStates
+from activities.models.post_types import QuestionData, vote_value
 from activities.models.timeline_event import TimelineEvent
 from users.models import Block, Identity
 
@@ -271,43 +271,84 @@ class PostInteraction(StatorModel):
 
     @classmethod
     def create_votes(cls, post, identity, choices) -> list["PostInteraction"]:
-        question = post.type_data
-        if (
-            Block.objects.filter(
-                source=post.author, target=identity, mute=False
-            ).exists()
-            or Block.objects.filter(
-                source=identity, target=post.author, mute=False
-            ).exists()
-        ):
-            raise ValueError("Validation failed: blocked")
-
-        if question.end_time and timezone.now() > question.end_time:
-            raise ValueError("Validation failed: The poll has already ended")
-
-        if post.interactions.filter(identity=identity, type=cls.Types.vote).exists():
-            raise ValueError("Validation failed: You have already voted on this poll")
-
         votes = []
         with transaction.atomic():
-            for choice in set(choices):
+            # Lock the post row so concurrent votes on the same poll
+            # can't slip past the duplicate checks or clobber tallies
+            post = Post.objects.select_for_update().get(pk=post.pk)
+            question = post.type_data
+            if not isinstance(question, QuestionData):
+                raise ValueError("Validation failed: Post is not a poll")
+            if post.author_id == identity.pk:
+                raise ValueError("Validation failed: You can't vote in your own poll")
+            if (
+                Block.objects.filter(
+                    source=post.author, target=identity, mute=False
+                ).exists()
+                or Block.objects.filter(
+                    source=identity, target=post.author, mute=False
+                ).exists()
+            ):
+                raise ValueError("Validation failed: blocked")
+
+            if question.is_expired:
+                raise ValueError("Validation failed: The poll has already ended")
+
+            options = question.options or []
+            choices = set(choices)
+            if not choices:
+                raise ValueError("Validation failed: No poll options chosen")
+            if any(choice < 0 or choice >= len(options) for choice in choices):
+                raise ValueError(
+                    "Validation failed: The chosen vote option does not exist"
+                )
+            existing_votes = post.interactions.filter(
+                identity=identity, type=cls.Types.vote
+            )
+            if question.mode == "anyOf":
+                # Multiple-choice polls accept additional, not-yet-voted options
+                voted_values = set(existing_votes.values_list("value", flat=True))
+                if any(
+                    vote_value(options[choice].name) in voted_values
+                    for choice in choices
+                ):
+                    raise ValueError(
+                        "Validation failed: You have already voted on this poll"
+                    )
+                already_voted = bool(voted_values)
+            else:
+                if len(choices) > 1 or existing_votes.exists():
+                    raise ValueError(
+                        "Validation failed: You have already voted on this poll"
+                    )
+                already_voted = False
+
+            for choice in choices:
                 vote = cls.objects.create(
                     identity=identity,
                     post=post,
                     type=PostInteraction.Types.vote,
-                    value=question.options[choice].name,
+                    value=vote_value(options[choice].name),
                 )
                 vote.object_uri = f"{identity.actor_uri}#votes/{vote.id}"
                 vote.save()
                 votes.append(vote)
 
                 if not post.local:
-                    question.options[choice].votes += 1
+                    options[choice].votes += 1
 
-            if not post.local:
+            if not post.local and not already_voted:
                 question.voter_count += 1
 
             post.calculate_type_data()
+
+        # Track remote polls so local voters get notified when they end
+        if (
+            not post.local
+            and question.effective_end_time
+            and post.state in [PostStates.fanned_out, PostStates.edited_fanned_out]
+        ):
+            post.transition_perform(PostStates.question_open)
 
         return votes
 
@@ -435,20 +476,31 @@ class PostInteraction(StatorModel):
                     and isinstance(post.type_data, QuestionData)
                 ):
                     type = cls.Types.vote
+                    # Lock the post row so concurrent inbound votes can't
+                    # slip past the duplicate checks (we are always inside
+                    # a transaction here via handle_ap)
+                    post = Post.objects.select_for_update().get(pk=post.pk)
                     question = post.type_data
-                    value = object["name"]
-                    if question.end_time and timezone.now() > question.end_time:
+                    value = object.get("name")
+                    option_names = {option.name for option in (question.options or [])}
+                    if not isinstance(value, str) or value not in option_names:
+                        raise cls.DoesNotExist(
+                            f"Invalid vote option {value!r} for question {post.id}"
+                        )
+                    value = vote_value(value)
+                    if question.is_expired:
                         # TODO: Maybe create an expecific expired exception?
                         raise cls.DoesNotExist(
                             f"Cannot create a vote to the expired question {post.id}"
                         )
 
-                    already_voted = (
-                        post.type_data.mode == "oneOf"
-                        and post.interactions.filter(
-                            type=cls.Types.vote, identity=identity
-                        ).exists()
+                    existing_votes = post.interactions.filter(
+                        type=cls.Types.vote, identity=identity
                     )
+                    if question.mode == "oneOf":
+                        already_voted = existing_votes.exists()
+                    else:
+                        already_voted = existing_votes.filter(value=value).exists()
                     if already_voted:
                         raise cls.DoesNotExist(
                             f"The identity {identity.handle} already voted in question {post.id}"
@@ -458,6 +510,22 @@ class PostInteraction(StatorModel):
                     raise ActivityPubFormatError(
                         f"Cannot handle AP type {data['type']}"
                     )
+                # Boosts of the same post by the same identity are
+                # idempotent - groups (e.g. Lemmy communities) announce a
+                # new post both as Announce(Create(Page)) and as a bare
+                # Announce(Page), each with its own activity id. Lock the
+                # post row (we are always inside a transaction here via
+                # handle_ap) so concurrent duplicate announces serialize.
+                if type == cls.Types.boost:
+                    post = Post.objects.select_for_update().get(pk=post.pk)
+                    existing = cls.objects.filter(
+                        identity=identity,
+                        post=post,
+                        type=cls.Types.boost,
+                        state__in=PostInteractionStates.group_active(),
+                    ).first()
+                    if existing:
+                        return existing
                 # Make the actual interaction
                 boost = cls.objects.create(
                     object_uri=data["id"],
@@ -481,7 +549,7 @@ class PostInteraction(StatorModel):
             # Create it
             try:
                 interaction = cls.by_ap(data, create=True)
-            except (cls.DoesNotExist, Post.DoesNotExist):
+            except cls.DoesNotExist, Post.DoesNotExist:
                 # That post is gone, boss
                 # TODO: Limited retry state?
                 return
@@ -499,7 +567,7 @@ class PostInteraction(StatorModel):
             # Find it
             try:
                 interaction = cls.by_ap(data["object"])
-            except (cls.DoesNotExist, Post.DoesNotExist):
+            except cls.DoesNotExist, Post.DoesNotExist:
                 # Well I guess we don't need to undo it do we
                 return
             # Verify the actor matches
@@ -582,7 +650,7 @@ class PostInteraction(StatorModel):
                     interaction.transition_perform(
                         PostInteractionStates.undone_fanned_out
                     )
-            except (cls.DoesNotExist, Post.DoesNotExist):
+            except cls.DoesNotExist, Post.DoesNotExist:
                 return
 
     ### Mastodon API ###

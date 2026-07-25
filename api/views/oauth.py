@@ -2,9 +2,10 @@ import base64
 import hmac
 import secrets
 import time
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlencode, urlparse, urlunparse
 
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.db import transaction
 from django.http import (
     HttpResponse,
     HttpResponseForbidden,
@@ -29,13 +30,11 @@ class OauthRedirect(HttpResponseRedirect):
 
         query_string = url_parts[4]
 
-        for key, value in kwargs.items():
-            if value is None:
-                continue
-            if not query_string:
-                query_string = f"{key}={value}"
-            else:
-                query_string += f"&{key}={value}"
+        # urlencode the values: state is client-supplied and could otherwise
+        # inject extra query parameters into the redirect Location
+        params = urlencode([(k, v) for k, v in kwargs.items() if v is not None])
+        if params:
+            query_string = f"{query_string}&{params}" if query_string else params
 
         url_parts[4] = query_string
         super().__init__(urlunparse(url_parts))
@@ -50,9 +49,17 @@ class AuthorizationView(LoginRequiredMixin, View):
     """
 
     def get(self, request):
-        redirect_uri = self.request.GET["redirect_uri"]
+        redirect_uri = self.request.GET.get("redirect_uri")
         scope = self.request.GET.get("scope", "read write")
         state = self.request.GET.get("state")
+
+        if not redirect_uri:
+            return render(
+                request,
+                "api/oauth_error.html",
+                {"error": "Missing redirect_uri"},
+                status=400,
+            )
 
         response_type = self.request.GET.get("response_type")
         if response_type != "code":
@@ -143,6 +150,19 @@ def extract_client_info_from_basic_auth(request):
     return None, None
 
 
+def constant_time_equal(expected: str | None, provided: str | None) -> bool:
+    """
+    Constant-time comparison of two credential strings.
+
+    hmac.compare_digest raises TypeError for str arguments holding non-ASCII
+    characters, so compare the encoded bytes instead: a client sending a
+    non-ASCII client_id/secret must get a clean auth failure rather than a 500.
+    """
+    return hmac.compare_digest(
+        (expected or "").encode("utf-8"), (provided or "").encode("utf-8")
+    )
+
+
 @method_decorator(csrf_exempt, name="dispatch")
 class TokenView(View):
     def verify_code(
@@ -151,8 +171,8 @@ class TokenView(View):
         application = authorization.application
         # Use constant-time comparison on secrets to prevent timing attacks
         return (
-            hmac.compare_digest(application.client_id, client_id or "")
-            and hmac.compare_digest(application.client_secret, client_secret or "")
+            constant_time_equal(application.client_id, client_id)
+            and constant_time_equal(application.client_secret, client_secret)
             and authorization.redirect_uri == redirect_uri
         )
 
@@ -193,37 +213,44 @@ class TokenView(View):
                     status=400,
                 )
 
-            authorization = Authorization.objects.filter(code=code).first()
-            if not authorization or (
-                timezone.now() - authorization.created
-                > timezone.timedelta(seconds=authorization.valid_for_seconds)
-            ):
-                return JsonResponse({"error": "access_denied"}, status=401)
+            with transaction.atomic():
+                # lock the authorization row so the code is single-use even
+                # under concurrent redemption attempts
+                authorization = (
+                    Authorization.objects.select_for_update().filter(code=code).first()
+                )
+                if not authorization or (
+                    timezone.now() - authorization.created
+                    > timezone.timedelta(seconds=authorization.valid_for_seconds)
+                ):
+                    return JsonResponse({"error": "access_denied"}, status=401)
 
-            application = Application.objects.filter(
-                client_id=post_data["client_id"],
-                client_secret=post_data["client_secret"],
-            ).first()
+                application = Application.objects.filter(
+                    client_id=post_data["client_id"],
+                    client_secret=post_data["client_secret"],
+                ).first()
 
-            code_verified = self.verify_code(
-                authorization,
-                client_id=post_data.get("client_id"),
-                client_secret=post_data.get("client_secret"),
-                redirect_uri=post_data.get("redirect_uri"),
-            )
+                code_verified = self.verify_code(
+                    authorization,
+                    client_id=post_data.get("client_id"),
+                    client_secret=post_data.get("client_secret"),
+                    redirect_uri=post_data.get("redirect_uri"),
+                )
 
-            if not application or authorization.token or not code_verified:
-                # this authorization code has already been used
-                return JsonResponse({"error": "access_denied"}, status=401)
+                if not application or authorization.token or not code_verified:
+                    # this authorization code has already been used
+                    return JsonResponse({"error": "access_denied"}, status=401)
 
-            token = Token.objects.create(
-                application=application,
-                user=authorization.user,
-                identity=authorization.identity,
-                token=secrets.token_urlsafe(43),
-                scopes=authorization.scopes,
-            )
-            token.save()
+                token = Token.objects.create(
+                    application=application,
+                    user=authorization.user,
+                    identity=authorization.identity,
+                    token=secrets.token_urlsafe(43),
+                    scopes=authorization.scopes,
+                )
+                # mark the code as redeemed so it cannot be exchanged again
+                authorization.token = token
+                authorization.save(update_fields=["token", "updated"])
             # Return them the token
             return JsonResponse(
                 {

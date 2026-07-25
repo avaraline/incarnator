@@ -2,7 +2,7 @@ import logging
 from typing import Optional
 
 import httpx
-from core.exceptions import ActorMismatchError
+from core.exceptions import ActivityPubDeliveryError, ActorMismatchError
 from core.ld import canonicalise, get_str_or_id
 from core.snowflake import Snowflake
 from django.db import models, transaction
@@ -82,6 +82,20 @@ class FollowStates(StateGraph):
                 )
             except httpx.RequestError:
                 return
+            except ActivityPubDeliveryError as error:
+                if error.retryable:
+                    # The target will take it later, so ask again next cycle
+                    logger.info("Follow %s was deferred: %s", instance.pk, error)
+                    return
+                if error.unauthorized:
+                    # The target will not take follows from us at all
+                    logger.warning("Follow %s was rejected: %s", instance.pk, error)
+                    return cls.rejecting
+                # Any other 4xx is ambiguous, and resending cannot resolve it:
+                # servers that deduplicate by activity id (Lemmy) refuse every
+                # resend of a Follow they already recorded. Wait for the
+                # Accept/Reject instead of retrying for a day.
+                logger.warning("Follow %s was refused: %s", instance.pk, error)
             return cls.pending_approval
         # local/remote follow local, check deleted & manually_approve
         if instance.target.deleted:
@@ -241,11 +255,15 @@ class Follow(StatorModel):
             raise ValueError("You cannot initiate follows from a remote Identity")
         try:
             follow = Follow.objects.get(source=source, target=target)
-            if not follow.active:
+            reactivated = not follow.active
+            if reactivated:
                 follow.state = FollowStates.unrequested
             follow.boosts = boosts
             follow.notify = notify
             follow.save()
+            if reactivated:
+                # Reusing the row skips the post_save creation signal.
+                source.calculate_stats()
         except Follow.DoesNotExist:
             with transaction.atomic():
                 follow = Follow.objects.create(
@@ -269,6 +287,18 @@ class Follow(StatorModel):
     @property
     def accepted(self):
         return self.state in FollowStates.group_accepted()
+
+    ### State machine ###
+
+    def transition_perform(self, state):
+        """
+        Refresh follow-count stats on state changes. Transitions use
+        queryset.update(), which skips the post_save signal that otherwise
+        keeps Identity.stats fresh. (calculate_stats is a no-op for remotes.)
+        """
+        super().transition_perform(state)
+        self.source.calculate_stats()
+        self.target.calculate_stats()
 
     ### ActivityPub (outbound) ###
 
@@ -382,7 +412,7 @@ class Follow(StatorModel):
             if not data["object"]:
                 raise Identity.DoesNotExist()
             follow = cls.by_ap(data["object"])
-        except (cls.DoesNotExist, Identity.DoesNotExist):
+        except cls.DoesNotExist, Identity.DoesNotExist:
             logger.warning(
                 "Follow or Identity not found for incoming Accept",
                 extra={"data": data},
@@ -394,8 +424,11 @@ class Follow(StatorModel):
             raise ActorMismatchError(
                 "Accept actor does not match its Follow object", data
             )
-        # If the follow was waiting to be accepted, transition it
-        if follow and follow.state == FollowStates.pending_approval:
+        # If the follow was waiting to be accepted, transition it. An Accept can
+        # also arrive while the follow is still unrequested: the target may have
+        # processed our Follow even though delivering it looked like a failure
+        # to us (a timeout, or a refusal of a resend it had already handled).
+        if follow.state in [FollowStates.unrequested, FollowStates.pending_approval]:
             follow.transition_perform(FollowStates.accepting)
 
     @classmethod
@@ -406,7 +439,7 @@ class Follow(StatorModel):
         # Resolve source and target and see if a Follow exists (it really should)
         try:
             follow = cls.by_ap(data["object"])
-        except (cls.DoesNotExist, Identity.DoesNotExist):
+        except cls.DoesNotExist, Identity.DoesNotExist:
             logger.info(
                 "Follow or Identity not found for incoming Reject",
                 extra={"data": data},
@@ -438,7 +471,7 @@ class Follow(StatorModel):
         # Resolve source and target and see if a Follow exists (it hopefully does)
         try:
             follow = cls.by_ap(data["object"])
-        except (cls.DoesNotExist, Identity.DoesNotExist):
+        except cls.DoesNotExist, Identity.DoesNotExist:
             logger.info(
                 "Follow or Identity not found for incoming Undo", extra={"data": data}
             )

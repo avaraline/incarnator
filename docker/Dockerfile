@@ -1,5 +1,5 @@
 ARG IMAGE_HOST=python
-ARG IMAGE_LABEL=3.13-slim
+ARG IMAGE_LABEL=3.14-slim
 
 # Build stage: install dependencies with uv
 

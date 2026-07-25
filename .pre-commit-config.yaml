@@ -1,3 +1,6 @@
+# Hook envs need 3.14 so they can parse PEP 758 (unparenthesized except groups)
+default_language_version:
+  python: python3.14
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

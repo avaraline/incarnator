@@ -2,12 +2,15 @@ from urllib.parse import urlparse
 
 import httpx
 from activities.models import Emoji, PostAttachment
+from core.files import SSRFAttemptError, make_safe_client
 from django.conf import settings
 from django.http import Http404, HttpResponse
-from django.shortcuts import get_object_or_404
+from django.shortcuts import get_object_or_404, redirect
+from django.templatetags.static import static
 from django.views.generic import View
 
 from users.models import Identity
+from users.models.identity import DEFAULT_ICON_STATIC_PATH
 
 
 class BaseProxyView(View):
@@ -31,30 +34,47 @@ class BaseProxyView(View):
                 headers={
                     "X-Accel-Redirect": "/__takahe_accel__/",
                     "X-Takahe-RealUri": remote_url,
-                    "Cache-Control": "public",
+                    # No Cache-Control here: nginx copies it through the
+                    # accel redirect onto every response including error
+                    # passthroughs; the client TTL is added by nginx instead
                 },
             )
         else:
+            max_bytes = settings.SETUP.MEDIA_MAX_IMAGE_FILESIZE_MB * 1024 * 1024
             try:
-                remote_response = httpx.get(
-                    remote_url,
-                    headers={"User-Agent": settings.TAKAHE_USER_AGENT},
-                    follow_redirects=True,
+                with make_safe_client(
                     timeout=settings.SETUP.REMOTE_TIMEOUT,
-                )
-            except httpx.RequestError:
-                return HttpResponse(status=502)
-            if remote_response.status_code >= 400:
+                ) as client:
+                    with client.stream("GET", remote_url) as remote_response:
+                        if remote_response.status_code >= 400:
+                            return HttpResponse(status=502)
+                        # Only serve content whose Content-Type is on the image
+                        # allowlist.  A malicious remote server could set
+                        # text/html and turn the proxy into an XSS vector on
+                        # the local domain.
+                        content_type = remote_response.headers.get(
+                            "Content-Type", "application/octet-stream"
+                        )
+                        if not content_type.startswith("image/"):
+                            content_type = "application/octet-stream"
+                        cache_control = remote_response.headers.get(
+                            "Cache-Control", "public, max-age=3600"
+                        )
+                        body = bytearray()
+                        for chunk in remote_response.iter_bytes(chunk_size=65536):
+                            remaining = max_bytes - len(body)
+                            if remaining <= 0:
+                                return HttpResponse(status=502)
+                            body.extend(chunk[:remaining])
+                            if len(chunk) > remaining:
+                                return HttpResponse(status=502)
+            except httpx.RequestError, SSRFAttemptError:
                 return HttpResponse(status=502)
             return HttpResponse(
-                remote_response.content,
+                bytes(body),
                 headers={
-                    "Content-Type": remote_response.headers.get(
-                        "Content-Type", "application/octet-stream"
-                    ),
-                    "Cache-Control": remote_response.headers.get(
-                        "Cache-Control", "public, max-age=3600"
-                    ),
+                    "Content-Type": content_type,
+                    "Cache-Control": cache_control,
                 },
             )
 
@@ -77,10 +97,34 @@ class EmojiCacheView(BaseProxyView):
 
 class IdentityIconCacheView(BaseProxyView):
     """
-    Proxies identity icons (avatars)
+    Proxies identity icons (avatars).
+
+    Falls back to the default avatar image instead of returning an error when
+    the icon is unavailable, so callers never surface a broken avatar image.
     """
 
-    def get_remote_url(self):
+    #: Static path of the placeholder avatar (shared with Identity).
+    default_icon_static_path = DEFAULT_ICON_STATIC_PATH
+
+    def get(self, request, **kwargs):
+        try:
+            response = super().get(request, **kwargs)
+        except Http404:
+            # No such identity, a local identity, or no stored icon_uri.
+            return self.default_icon_response()
+        # Remote fetch failed (>= 400, too large, or network/SSRF error).
+        if response.status_code >= 400:
+            return self.default_icon_response()
+        return response
+
+    def default_icon_response(self) -> HttpResponse:
+        # static() honours STATIC_URL and manifest hashing so the redirect
+        # points at the file collectstatic actually serves.
+        response = redirect(static(self.default_icon_static_path))
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        return response
+
+    def get_remote_url(self) -> str:
         self.identity = get_object_or_404(Identity, pk=self.kwargs["identity_id"])
         if self.identity.local or not self.identity.icon_uri:
             raise Http404()
