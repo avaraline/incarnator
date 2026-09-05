@@ -761,7 +761,7 @@ requires-dist = [
     { name = "pycountry", specifier = ">=23.12.11" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.7.1" },
     { name = "pydantic-settings", specifier = ">=2.2.1" },
-    { name = "pyld", specifier = ">=3.0.0" },
+    { name = "pyld", specifier = ">=3.3.0" },
     { name = "pymemcache", specifier = ">=4.0.0" },
     { name = "python-dateutil", specifier = ">=2.9.0.post0" },
     { name = "pywebpush", specifier = ">=2.0.0" },
@@ -1246,16 +1246,16 @@ wheels = [
 
 [[package]]
 name = "pyld"
-version = "3.0.0"
+version = "3.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cachetools" },
     { name = "frozendict" },
     { name = "lxml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e1/67/2c69359f671f50b551821dcdf6b85beb52f2b0115da933ae0c179f90092b/pyld-3.0.0.tar.gz", hash = "sha256:b1913a06054f35a31e4d9916d184852909b2a3c5fea55c341bd00917cf8b22ef", size = 85056, upload-time = "2026-04-02T09:10:16.001Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fe/fa/6a6484248a3ad6bbd9f07ad0e1efa15385747dc2dc61d95f94ebe31924c1/pyld-3.3.0.tar.gz", hash = "sha256:cf5353786582056e76cb1698db32d8fc796250703311d0e5e33dd3e86f23e031", size = 125628, upload-time = "2026-09-02T06:55:18.975Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5d/68/51a87c1bdf9beb0fdda6bbff67d32a1689d399e2fc74fe8fb9ada08f1f90/pyld-3.0.0-py3-none-any.whl", hash = "sha256:bfe0f5a476c67d8766d47c445ef2170b868a72654e535dbebc89c8e040b1fe88", size = 76837, upload-time = "2026-04-02T09:10:14.457Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/96/d4671916dc981b486cd8e919bf9b3be0463faab3d612e5815efaba63c62b/pyld-3.3.0-py3-none-any.whl", hash = "sha256:58aa63542a5989431426bdfef932db0d1b974e2928e179f74d5a903804de9692", size = 109432, upload-time = "2026-09-02T06:55:16.123Z" },
 ]
 
 [[package]]

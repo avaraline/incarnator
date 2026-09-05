@@ -7,6 +7,7 @@ from typing import Literal, NotRequired, TypedDict, cast
 from urllib.parse import urlparse
 
 import httpx
+import idna
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -15,7 +16,6 @@ from django.http import HttpRequest
 from django.utils import timezone
 from django.utils.http import http_date, parse_http_date
 from httpx._types import TimeoutTypes
-from idna.core import InvalidCodepoint
 from pyld import jsonld
 
 from core.exceptions import ActivityPubDeliveryError
@@ -344,9 +344,10 @@ class HttpSignature:
                 # Not our problem if the other end doesn't have proper SSL
                 logger.info("Invalid cert on %s %s", uri, invalid_cert)
                 raise SSLCertVerificationError(invalid_cert) from invalid_cert
-            except InvalidCodepoint as ex:
-                # Convert to a more generic error we handle
-                raise httpx.HTTPError(f"InvalidCodepoint: {str(ex)}") from None
+            except idna.IDNAError as ex:
+                # Emoji and other non-IDNA2008 hosts raise from httpx.URL.host,
+                # outside the httpx.HTTPError tree; they are simply unreachable.
+                raise httpx.ConnectError(f"Invalid IDNA host: {ex}") from None
             except SSRFAttemptError:
                 logger.warning("SSRF blocked on %s %s", method, uri)
                 raise

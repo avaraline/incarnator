@@ -1,4 +1,5 @@
 import pytest
+from django.conf import settings
 from django.templatetags.static import static
 
 
@@ -65,3 +66,28 @@ def test_successful_proxy_returns_image(client, remote_identity, httpx_mock):
     assert response.status_code == 200
     assert response["Content-Type"] == "image/png"
     assert response.content == b"fake-png-bytes"
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("extra_bytes", [0, 1])
+def test_proxy_enforces_download_limit(
+    client, remote_identity, httpx_mock, monkeypatch, extra_bytes
+):
+    monkeypatch.setattr(settings.SETUP, "MEDIA_MAX_IMAGE_FILESIZE_MB", 1)
+    remote_identity.icon_uri = "https://remote.test/icon.png"
+    remote_identity.save()
+    content = b"x" * (1024 * 1024 + extra_bytes)
+    httpx_mock.add_response(
+        url=remote_identity.icon_uri,
+        content=content,
+        headers={"Content-Type": "image/png"},
+    )
+
+    response = client.get(_icon_url(remote_identity.pk))
+
+    if extra_bytes:
+        assert response.status_code == 302
+        assert response["Location"] == _expected_default_avatar()
+    else:
+        assert response.status_code == 200
+        assert response.content == content
