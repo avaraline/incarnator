@@ -6,7 +6,7 @@ from urllib.parse import urldefrag, urlparse
 from activities.models import Post
 from activities.services import TimelineService
 from core.decorators import cache_page
-from core.ld import canonicalise, get_str_or_id
+from core.ld import GENERIC_AS_TYPES, canonicalise, get_str_or_id
 from core.signatures import (
     HttpSignature,
     LDSignature,
@@ -16,21 +16,64 @@ from core.signatures import (
 from core.views import StaticContentView
 from django.conf import settings
 from django.http import Http404, HttpResponse, HttpResponseBadRequest, JsonResponse
+from django.shortcuts import get_object_or_404
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_control
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import View
+from pyld.jsonld import JsonLdError
 
 from takahe import __version__
-from users.models import Identity, InboxMessage, SystemActor
+from users.models import FeatureAuthorization, Identity, InboxMessage, SystemActor
 from users.models.domain import Domain
 from users.shortcuts import by_handle_or_404
 
 logger = logging.getLogger(__name__)
 
+# Activities whose requester is implicit rather than carried in `actor`.
+# A FEP-7aa9 FeatureRequest names only `object` (the actor to feature) and
+# `instrument` (the collection); the requester owns that collection and is
+# proven by the signature on the delivery. Mastodon's
+# ActivityPub::FeatureRequestSerializer emits id, type, object and instrument
+# and nothing else, so without this the inbox rejects every real one.
+IMPLICIT_ACTOR_TYPES = {
+    "featurerequest",
+    "https://w3id.org/fep/7aa9#featurerequest",
+}
+
 
 class HttpResponseUnauthorized(HttpResponse):
     status_code = 401
+
+
+def ld_signature_creator(document: dict) -> str | None:
+    """
+    The actor URI credited with the document's LD signature, or None when there
+    is no well-formed signature block. Malformed blocks are reported by the
+    inbox itself, so this only has to be lenient.
+    """
+    signature = document.get("signature")
+    if not isinstance(signature, dict):
+        return None
+    creator = signature.get("creator")
+    if not isinstance(creator, str):
+        return None
+    return urldefrag(creator).url
+
+
+def usable_actor_uri(candidate: str | None) -> str | None:
+    """
+    A candidate is only usable as an actor if it names one: the payload actor,
+    keyId and creator are all sender-controlled, and anything without a
+    hostname would reach actor and domain lookup as garbage before a signature
+    has been checked.
+    """
+    if not candidate:
+        return None
+    parts = urlparse(candidate)
+    if parts.scheme not in ["http", "https"] or not parts.hostname:
+        return None
+    return candidate
 
 
 class FederatedView(View):
@@ -170,31 +213,94 @@ class Inbox(FederatedView):
         try:
             raw_document = json.loads(request.body)
             document = canonicalise(raw_document, include_security=True, outbound=False)
-        except ValueError:
+        except ValueError, JsonLdError:
+            # pyld reports malformed JSON-LD with its own exception, and a
+            # non-UTF-8 body arrives here as UnicodeDecodeError, so the log
+            # line must not assume the body decodes either.
             logger.warning(
-                "Inbox error when parsing JSON to LDDocument: %s", request.body.decode()
+                "Inbox error when parsing JSON to LDDocument: %s",
+                request.body.decode(errors="replace"),
             )
             return HttpResponseBadRequest("Error parsing JSON")
-        document_type = document["type"]
+
+        # JSON-LD allows a list of types; adopt the first concrete one
+        # (preserving case, which the comparisons below expect) so dispatch
+        # here and in the handlers works off a single type string.
+        document_type = document.get("type")
+        if isinstance(document_type, list):
+            named = [t for t in document_type if isinstance(t, str) and t]
+            document_type = next(
+                (t for t in named if t.lower() not in GENERIC_AS_TYPES),
+                named[0] if named else None,
+            )
+        if not isinstance(document_type, str) or not document_type:
+            logger.warning("Inbox error: missing or invalid type")
+            return HttpResponseBadRequest("Missing or invalid type")
+        document["type"] = document_type
         document_subtype = None
         if isinstance(document.get("object"), dict):
             document_subtype = document["object"].get("type")
 
+        # Parse the signatures before looking at the actor: for the activity
+        # types that carry no `actor`, the signer is the only statement of who
+        # sent this. The signatures themselves are checked further down.
+        http_sig_present = "Signature" in request.headers
+        ld_sig_present = "signature" in document
+        signature_details = None
+        key_id_actor = None
+        if http_sig_present:
+            try:
+                signature_details = HttpSignature.parse_signature(
+                    request.headers["signature"]
+                )
+            except VerificationFormatError as e:
+                logger.warning("Inbox error: Bad HTTP signature format: %s", e.args[0])
+                return HttpResponseBadRequest(e.args[0])
+            key_id_actor = urldefrag(signature_details["keyid"]).url
+
         # Find the Identity by the actor on the incoming item
         # This ensures that the signature used for the headers matches the actor
         # described in the payload.
-        if "actor" not in document:
-            logger.warning("Inbox error: unspecified actor")
-            return HttpResponseBadRequest("Unspecified actor")
+        # `actor` may arrive embedded as an object rather than a bare URI, so
+        # reduce it to the URI once here: identity lookup, relay detection,
+        # signature matching and every handler downstream expect that URI, and
+        # anything that does not name one has to be rejected before it reaches
+        # domain lookup as garbage.
+        actor_uri = usable_actor_uri(get_str_or_id(document.get("actor")))
+        if not actor_uri:
+            implicit_actor = (
+                document_type.lower() in IMPLICIT_ACTOR_TYPES
+                if isinstance(document_type, str)
+                else False
+            )
+            # The LD signature creator comes first: it credits the origin,
+            # while a relayed delivery is HTTP-signed by the relay. Where the
+            # two differ this puts the request into relay_mode below, which is
+            # what makes the relay prove itself and the origin prove the
+            # document, rather than the relay's signature carrying it alone.
+            signer_uri = usable_actor_uri(
+                ld_signature_creator(document)
+            ) or usable_actor_uri(key_id_actor)
+            if not implicit_actor or not signer_uri:
+                logger.warning("Inbox error: unspecified or invalid actor")
+                return HttpResponseBadRequest("Unspecified actor")
+            # Adopt the signer as the actor so blocking, signature verification
+            # and the handlers downstream all work off one notion of who sent
+            # the activity. Nothing is trusted yet: the signature is verified
+            # below exactly as it is for any other delivery, and it is that
+            # check which makes this attribution safe.
+            actor_uri = signer_uri
+        document["actor"] = actor_uri
 
         identity = Identity.by_actor_uri(document["actor"], create=True, transient=True)
-        if (
-            document_type == "Delete"
-            and document["actor"] == document["object"]
-            and identity._state.adding
-        ):
-            # We don't have an Identity record for the user. No-op
-            return HttpResponse(status=202)
+        if document_type == "Delete":
+            if "object" not in document:
+                # Nothing to delete, and the handlers dispatch on the object
+                logger.warning("Inbox error: Delete without object")
+                return HttpResponseBadRequest("Delete without object")
+            if document["actor"] == document["object"] and identity._state.adding:
+                # We don't have an Identity record for the user. No-op
+                return HttpResponse(status=202)
 
         # See if it's from a blocked user or domain - without calling
         # fetch_actor, which would fetch data from potentially bad actor
@@ -223,28 +329,18 @@ class Inbox(FederatedView):
         ]:
             return HttpResponse(status=202)
 
-        http_sig_present = "Signature" in request.headers
-        ld_sig_present = "signature" in document
         verified = False
         ld_sig_verified = False  # True when the LD signature itself checked out
         relay_mode = False  # True when HTTP signer != document actor
         relay_http_verified = False  # True when relay HTTP sig verified immediately
         metadata = {}
 
-        # Authenticate HTTP signature if present. Parse keyId first to detect
-        # relay deliveries (where the HTTP signer differs from document["actor"]).
-        # An invalid signature is a hard rejection. For unknown signers without a
-        # cached key, pre-compute data for deferred verification.
+        # Authenticate HTTP signature if present, using the keyId parsed above to
+        # detect relay deliveries (where the HTTP signer differs from
+        # document["actor"]). An invalid signature is a hard rejection. For
+        # unknown signers without a cached key, pre-compute data for deferred
+        # verification.
         if http_sig_present:
-            try:
-                signature_details = HttpSignature.parse_signature(
-                    request.headers["signature"]
-                )
-            except VerificationFormatError as e:
-                logger.warning("Inbox error: Bad HTTP signature format: %s", e.args[0])
-                return HttpResponseBadRequest(e.args[0])
-
-            key_id_actor = urldefrag(signature_details["keyid"]).url
             relay_mode = key_id_actor != document["actor"]
             signer_identity = (
                 Identity.by_actor_uri(key_id_actor, create=True, transient=True)
@@ -475,13 +571,21 @@ class Outbox(FederatedView):
         if not self.identity.local:
             raise Http404("Not a local identity")
         # Return an ordered collection with the most recent 10 public posts
-        posts = list(self.identity.posts.not_hidden().public()[:10])
+        posts = list(
+            self.identity.posts.not_hidden()
+            .public()
+            .prefetch_related("mentions", "emojis", "attachments")[:10]
+        )
+        replies = Post.public_replies_uris(posts)
         return JsonResponse(
             canonicalise(
                 {
                     "type": "OrderedCollection",
                     "totalItems": len(posts),
-                    "orderedItems": [post.to_ap() for post in posts],
+                    "orderedItems": [
+                        post.to_ap(replies_uris=replies.get(post.object_uri, []))
+                        for post in posts
+                    ],
                 }
             ),
             content_type="application/activity+json",
@@ -503,13 +607,17 @@ class FeaturedCollection(FederatedView):
         if not self.identity.local:
             raise Http404("Not a local identity")
         posts = list(TimelineService(self.identity).identity_pinned())
+        replies = Post.public_replies_uris(posts)
         return JsonResponse(
             canonicalise(
                 {
                     "type": "OrderedCollection",
                     "id": self.identity.actor_uri + "collections/featured/",
                     "totalItems": len(posts),
-                    "orderedItems": [post.to_ap() for post in posts],
+                    "orderedItems": [
+                        post.to_ap(replies_uris=replies.get(post.object_uri, []))
+                        for post in posts
+                    ],
                 }
             ),
             content_type="application/activity+json",
@@ -542,6 +650,33 @@ class FeaturedTags(FederatedView):
                     ],
                 }
             ),
+            content_type="application/activity+json",
+        )
+
+
+class FeatureAuthorizationView(View):
+    """
+    Serves a FEP-7aa9 FeatureAuthorization at a dereferenceable URL so that
+    third-party servers can verify that a local identity consented to being
+    listed in a featured collection.
+    """
+
+    def get(self, request, handle, auth_id):
+        if settings.SETUP.NO_FEDERATION:
+            return HttpResponse(status=503)
+        identity = by_handle_or_404(request, handle, local=False)
+        if not identity.local:
+            raise Http404("Not a local identity")
+        auth = get_object_or_404(
+            FeatureAuthorization.objects.select_related("identity"),
+            pk=auth_id,
+            identity=identity,
+        )
+        if not identity.discoverable:
+            # Consent was withdrawn since the stamp was issued
+            raise Http404("Feature authorization withdrawn")
+        return JsonResponse(
+            canonicalise(auth.to_ap(), include_security=True),
             content_type="application/activity+json",
         )
 

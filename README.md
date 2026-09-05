@@ -25,3 +25,6 @@ This fork has a number of changes/additions:
 * Group actor support
 * ActivityPub replies collection sync
 * Preview cards
+* Poll creation, voting, edits, and expiry notifications
+* ActivityPub inbox forwarding, Lemmy interoperability, and collection feature authorization
+* Article and media object rendering with preview cards

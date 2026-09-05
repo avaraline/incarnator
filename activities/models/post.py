@@ -15,6 +15,7 @@ from django.conf import settings
 from django.contrib.postgres.indexes import GinIndex
 from django.contrib.postgres.search import SearchVector
 from django.db import models, transaction
+from django.db.models.functions import RowNumber
 from django.db.models.signals import post_delete, post_save
 from django.db.utils import IntegrityError
 from django.template import loader
@@ -40,6 +41,7 @@ from core.json import json_from_response
 from core.ld import (
     canonicalise,
     format_ld_date,
+    get_ap_link,
     get_first_concrete_type,
     get_language,
     get_list,
@@ -65,55 +67,6 @@ logger = logging.getLogger(__name__)
 # Postgres truncation errors (BookWyrm Quotation objects, for example, send
 # the HTML quotation text under the `quote` key).
 _QUOTE_URI_MAX_LENGTH = 2048
-
-
-def _ap_link(value, preferred_media_type: str | None = None) -> tuple[str | None, dict]:
-    """Return one URL and its Link/Object metadata from an AS url value.
-
-    ActivityStreams permits URL values to be URI strings, embedded Link
-    objects, or arrays of either. Prefer a requested media type (normally
-    text/html for a status permalink), then fall back to the first usable
-    value. The metadata is returned as well so callers can retain dimensions
-    and media type information for icons and attachments.
-    """
-
-    candidates: list[tuple[str, dict]] = []
-
-    def collect(item, inherited: dict | None = None) -> None:
-        if isinstance(item, str):
-            candidates.append((item, inherited or {}))
-            return
-        if isinstance(item, list):
-            for child in item:
-                collect(child, inherited)
-            return
-        if not isinstance(item, dict):
-            return
-
-        # AS Link uses href; Object subclasses usually use url.
-        href = item.get("href")
-        if isinstance(href, str):
-            candidates.append((href, item))
-        nested_url = item.get("url")
-        if nested_url is not None:
-            collect(nested_url, item)
-        if not isinstance(href, str) and nested_url is None:
-            object_id = item.get("id")
-            if isinstance(object_id, str):
-                candidates.append((object_id, item))
-
-    collect(value)
-    if not candidates:
-        return None, {}
-    if preferred_media_type:
-        for url, metadata in candidates:
-            media_type = metadata.get("mediaType")
-            if (
-                isinstance(media_type, str)
-                and media_type.split(";", 1)[0].lower() == preferred_media_type
-            ):
-                return url, metadata
-    return candidates[0]
 
 
 def _natural_language_value(data: dict, key: str) -> str:
@@ -840,7 +793,7 @@ class Post(StatorModel):
         obj = self.type_data.get("object") if isinstance(self.type_data, dict) else None
         if not isinstance(obj, dict):
             return None
-        url, _ = _ap_link(obj.get("image"))
+        url, _ = get_ap_link(obj.get("image"))
         if isinstance(url, str) and url.startswith(("http://", "https://")):
             return url
         return None
@@ -1200,9 +1153,49 @@ class Post(StatorModel):
 
     ### ActivityPub (outbound) ###
 
-    def to_ap(self) -> dict:
+    REPLIES_COLLECTION_PAGE_SIZE = 50
+
+    @classmethod
+    def public_replies_uris(cls, posts: Iterable["Post"]) -> dict[str, list[str]]:
+        """
+        Returns the first page of public reply URIs for each post, keyed by
+        the post's object_uri, in a single query. Feed the result to to_ap()
+        when serialising many posts.
+        """
+        uris = [post.object_uri for post in posts if post.object_uri]
+        result: dict[str, list[str]] = {uri: [] for uri in uris}
+        if not uris:
+            return result
+        rows = (
+            cls.objects.filter(
+                in_reply_to__in=uris,
+                visibility__in=[
+                    cls.Visibilities.public,
+                    cls.Visibilities.unlisted,
+                ],
+            )
+            .not_hidden()
+            .annotate(
+                reply_index=models.Window(
+                    RowNumber(),
+                    partition_by=models.F("in_reply_to"),
+                    order_by=models.F("published").asc(),
+                )
+            )
+            .filter(reply_index__lte=cls.REPLIES_COLLECTION_PAGE_SIZE)
+            .order_by("in_reply_to", "published")
+            .values_list("in_reply_to", "object_uri")
+        )
+        for parent_uri, reply_uri in rows:
+            result[parent_uri].append(reply_uri)
+        return result
+
+    def to_ap(self, replies_uris: list[str] | None = None) -> dict:
         """
         Returns the AP JSON for this object
+
+        replies_uris is the post's entry from public_replies_uris(); when
+        omitted it is queried here.
         """
         self.author.ensure_uris()
         value = {
@@ -1306,6 +1299,8 @@ class Post(StatorModel):
         if self.local and self.object_uri:
             replies_uri = self.object_uri + "replies/"
             replies_count = self.stats.get("replies", 0) if self.stats else 0
+            if replies_uris is None:
+                replies_uris = self.public_replies_uris([self])[self.object_uri]
             value["replies"] = {
                 "id": replies_uri,
                 "type": "Collection",
@@ -1313,18 +1308,7 @@ class Post(StatorModel):
                 "first": {
                     "type": "CollectionPage",
                     "partOf": replies_uri,
-                    "items": list(
-                        Post.objects.filter(
-                            in_reply_to=self.object_uri,
-                            visibility__in=[
-                                Post.Visibilities.public,
-                                Post.Visibilities.unlisted,
-                            ],
-                        )
-                        .not_hidden()
-                        .order_by("published")
-                        .values_list("object_uri", flat=True)[:50]
-                    ),
+                    "items": list(replies_uris),
                 },
             }
         # Remove fields if they're empty
@@ -1627,7 +1611,7 @@ class Post(StatorModel):
                 raise cls.DoesNotExist(f"No post with ID {data['id']}", data)
         if update or created:
             post.type = data["type"]
-            post.url, _ = _ap_link(data.get("url"), preferred_media_type="text/html")
+            post.url, _ = get_ap_link(data.get("url"), preferred_media_type="text/html")
             post.url = post.url or data["id"]
             if post.type == cls.Types.question:
                 post.type_data = PostTypeData(root=data).root
@@ -1759,7 +1743,7 @@ class Post(StatorModel):
                 if "url" not in attachment and "href" in attachment:
                     # Links have hrefs, while other Objects have urls
                     attachment["url"] = attachment["href"]
-                attachment_url, link_metadata = _ap_link(attachment.get("url"))
+                attachment_url, link_metadata = get_ap_link(attachment.get("url"))
                 if "focalPoint" in attachment:
                     try:
                         focal_x, focal_y = attachment["focalPoint"]
@@ -2371,7 +2355,7 @@ class Post(StatorModel):
         if not card_url or not card_url.startswith(("https://", "http://")):
             return
 
-        icon_url, icon = _ap_link(data.get("icon"))
+        icon_url, icon = get_ap_link(data.get("icon"))
         if icon_url and (
             not icon_url.startswith(("https://", "http://"))
             or len(icon_url) > PreviewCard._meta.get_field("image_url").max_length

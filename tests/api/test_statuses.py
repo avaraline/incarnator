@@ -4,6 +4,39 @@ from activities.models import Post, PostAttachment, PostAttachmentStates
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize("orphaned", [False, True])
+@pytest.mark.parametrize("edit", [False, True])
+def test_cannot_attach_unowned_media(
+    api_client, identity, other_identity, orphaned, edit
+):
+    attachment = PostAttachment.objects.create(
+        mimetype="image/webp",
+        author=None if orphaned else other_identity,
+    )
+    if edit:
+        post = Post.create_local(author=identity, content="Original")
+        response = api_client.put(
+            f"/api/v1/statuses/{post.pk}",
+            content_type="application/json",
+            data={"status": "Changed", "media_ids": [str(attachment.pk)]},
+        )
+        post.refresh_from_db()
+        assert post.content == "<p>Original</p>"
+    else:
+        count = Post.objects.count()
+        response = api_client.post(
+            "/api/v1/statuses",
+            content_type="application/json",
+            data={"status": "New", "media_ids": [str(attachment.pk)]},
+        )
+        assert Post.objects.count() == count
+    assert response.status_code == 403
+    attachment.refresh_from_db()
+    assert attachment.post_id is None
+    assert api_client.get(f"/api/v1/media/{attachment.pk}").status_code == 401
+
+
+@pytest.mark.django_db
 def test_post_status(api_client, identity):
     """
     Tests posting, editing and deleting a status
@@ -217,6 +250,34 @@ def test_post_status_with_quote(api_client, identity):
     assert response["quote"] is not None
     assert response["quote"]["state"] == "accepted"
     assert response["quote"]["quoted_status"]["id"] == str(original.pk)
+
+
+@pytest.mark.django_db
+def test_post_status_trailing_url_is_not_a_quote(api_client, identity):
+    """A trailing post URL stays plain text; quoting is explicit only."""
+    original = Post.create_local(author=identity, content="Original post")
+    status_id = api_client.post(
+        "/api/v1/statuses",
+        content_type="application/json",
+        data={"status": f"Look at this\n{original.object_uri}"},
+    ).json()["id"]
+    response = api_client.get(f"/api/v1/statuses/{status_id}").json()
+    assert response["quote"] is None
+    assert (
+        original.object_uri
+        in api_client.get(f"/api/v1/statuses/{status_id}/source").json()["text"]
+    )
+
+
+@pytest.mark.django_db
+def test_post_status_with_unknown_quote_id(api_client, identity):
+    """An unresolvable quoted_status_id is an error, not a silent no-op."""
+    response = api_client.post(
+        "/api/v1/statuses",
+        content_type="application/json",
+        data={"status": "Quoting nothing", "quoted_status_id": "123456789"},
+    )
+    assert response.status_code == 404
 
 
 @pytest.mark.django_db

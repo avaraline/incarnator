@@ -4,6 +4,7 @@ from django.conf import settings
 from django.templatetags.static import static
 from pytest_httpx import HTTPXMock
 
+from core.files import check_url_safety
 from core.models import Config
 from users.models import Domain, Identity, User
 from users.views.identity import CreateIdentity
@@ -299,6 +300,143 @@ def test_fetch_actor_without_url_falls_back_to_actor_uri(httpx_mock, config_syst
 
 @pytest.mark.django_db
 @pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
+def test_fetch_actor_with_link_array_url(httpx_mock, config_system):
+    """
+    Some servers publish "url" as an array of Link objects covering
+    http/ipns/hyper transports. Assigning that list straight to the 500-char
+    profile_uri column raised a Postgres DataError and wedged the actor-refresh
+    task; we should keep the HTML permalink instead.
+    """
+    identity = Identity.objects.create(
+        actor_uri="https://example.com/about.jsonld",
+        local=False,
+    )
+    httpx_mock.add_response(
+        url="https://example.com/.well-known/webfinger?resource=acct:test@example.com",
+        headers={"Content-Type": "application/activity+json"},
+        json={
+            "subject": "acct:test@example.com",
+            "links": [
+                {
+                    "rel": "self",
+                    "type": "application/activity+json",
+                    "href": "https://example.com/about.jsonld",
+                },
+            ],
+        },
+    )
+    httpx_mock.add_response(
+        url="https://example.com/about.jsonld",
+        headers={"Content-Type": "application/activity+json"},
+        json={
+            "@context": [
+                "https://www.w3.org/ns/activitystreams",
+                "https://w3id.org/security/v1",
+            ],
+            "id": "https://example.com/about.jsonld",
+            "type": "Person",
+            "inbox": "https://example.com/inbox",
+            "publicKey": {
+                "id": "https://example.com/about.jsonld#main-key",
+                "owner": "https://example.com/about.jsonld",
+                "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nits-a-faaaake\n-----END PUBLIC KEY-----\n",
+            },
+            # JSON-LD keeps multi-valued names as a list
+            "name": ["Test User", "Nombre De Prueba"],
+            "preferredUsername": "test",
+            "url": [
+                {
+                    "type": "Link",
+                    "mediaType": "text/html",
+                    "href": "https://example.com/",
+                    "rel": "canonical",
+                },
+                {
+                    "type": "Link",
+                    "mediaType": "application/activity+json",
+                    "href": "https://example.com/about.jsonld",
+                    "rel": "alternate",
+                },
+                {
+                    "type": "Link",
+                    "mediaType": "application/activity+json",
+                    "href": "ipns://example.com/about.ipns.jsonld",
+                    "rel": "alternate",
+                },
+                {
+                    "type": "Link",
+                    "mediaType": "application/activity+json",
+                    "href": "hyper://example.com/about.hyper.jsonld",
+                    "rel": "alternate",
+                },
+                {
+                    "type": "Link",
+                    "mediaType": "application/activity+json",
+                    "href": "bittorrent://example.com/about.bittorrent.jsonld",
+                    "rel": "alternate",
+                },
+                {
+                    "type": "Link",
+                    "mediaType": "application/ld+json",
+                    "href": "https://example.com/about.ld.jsonld",
+                    "rel": "alternate",
+                },
+            ],
+        },
+    )
+
+    assert identity.fetch_actor()
+
+    identity = Identity.objects.get(pk=identity.pk)
+    # The text/html Link wins; the list is never stringified into the column
+    assert identity.profile_uri == "https://example.com/"
+    assert identity.inbox_uri == "https://example.com/inbox"
+    assert identity.username == "test"
+    assert identity.name == "Test User"
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
+def test_fetch_actor_ignores_non_web_url_transports(httpx_mock, config_system):
+    """
+    When "url" only advertises transports a browser can't follow, there is no
+    usable profile link; fall back to actor_uri rather than store a dead href.
+    """
+    identity = Identity.objects.create(
+        actor_uri="https://example.com/about.jsonld",
+        local=False,
+    )
+    httpx_mock.add_response(
+        url="https://example.com/about.jsonld",
+        headers={"Content-Type": "application/activity+json"},
+        json={
+            "@context": ["https://www.w3.org/ns/activitystreams"],
+            "id": "https://example.com/about.jsonld",
+            "type": "Person",
+            "inbox": "https://example.com/inbox",
+            "url": [
+                {
+                    "type": "Link",
+                    "mediaType": "text/html",
+                    "href": "ipns://example.com/about.ipns.jsonld",
+                },
+                {
+                    "type": "Link",
+                    "mediaType": "application/activity+json",
+                    "href": "hyper://example.com/about.hyper.jsonld",
+                },
+            ],
+        },
+    )
+
+    assert identity.fetch_actor()
+
+    identity = Identity.objects.get(pk=identity.pk)
+    assert identity.profile_uri == "https://example.com/about.jsonld"
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
 def test_fetch_actor_with_list_type(httpx_mock, config_system):
     """
     JSON-LD allows "type" to be a list, and ActivityPods-style servers emit
@@ -507,3 +645,23 @@ def test_default_icon_migration(identity_factory, domain):
     remote.refresh_from_db()
     assert remote.icon_uri == "https://remote.example/s/img/avatar.svg"
     assert remote.state == "updated"
+
+
+def test_fetch_actor_invalid_idna_host(config_system, monkeypatch, settings):
+    """
+    An actor on an unencodable host is unfetchable, so fetch_actor reports
+    failure instead of letting a raw idna error escape to Stator, which had
+    inbox_message logging an error on every retry (NEODB-SOCIAL-7VE / 7VF).
+    """
+    original = settings.SETUP.NO_FEDERATION
+    settings.SETUP.NO_FEDERATION = False
+    # The autouse _bypass_ssrf_check stubs out the hook that reads url.host.
+    monkeypatch.setattr("core.signatures.check_url_safety", check_url_safety)
+    try:
+        identity = Identity(
+            actor_uri="https://xn--4t8h.example/users/test-actor",
+            local=False,
+        )
+        assert identity.fetch_actor() is False
+    finally:
+        settings.SETUP.NO_FEDERATION = original

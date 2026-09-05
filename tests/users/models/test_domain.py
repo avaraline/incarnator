@@ -51,3 +51,12 @@ def test_recursive_block():
 
     # An unrelated domain should not be blocked
     assert not Domain.get_remote_domain("example.com").recursively_blocked()
+
+
+def test_fetch_nodeinfo_invalid_idna_host():
+    """
+    An unencodable host raises from httpx.URL.host while the request is built,
+    outside the httpx.HTTPError tree, so it used to escape to Stator.
+    """
+
+    assert Domain(domain="xn--4t8h.example").fetch_nodeinfo() is None

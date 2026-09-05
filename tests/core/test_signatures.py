@@ -1,10 +1,12 @@
 import base64
 import time
 
+import httpx
 import pytest
 from django.test.client import RequestFactory
 from pytest_httpx import HTTPXMock
 
+from core.files import check_url_safety
 from core.signatures import (
     HttpSignature,
     LDSignature,
@@ -280,3 +282,36 @@ def test_verify_request_malformed_date_header(keypair):
     )
     with pytest.raises(VerificationFormatError, match="Invalid Date header"):
         HttpSignature.verify_request(request, keypair["public_key"])
+
+
+# xn--4t8h is punycode for a pager emoji: valid DNS, invalid IDNA2008.
+EMOJI_PUNYCODE_URI = "https://xn--4t8h.example/users/test-actor"
+
+
+@pytest.fixture
+def _enable_federation(settings):
+    original = settings.SETUP.NO_FEDERATION
+    settings.SETUP.NO_FEDERATION = False
+    yield
+    settings.SETUP.NO_FEDERATION = original
+
+
+def test_signed_request_invalid_idna_host(keypair, monkeypatch, _enable_federation):
+    """
+    An unencodable host must stay inside the httpx.RequestError tree every
+    caller guards on. A raw idna error, or a bare httpx.HTTPError (which is
+    RequestError's parent), escapes them and reaches Stator.
+    """
+    # The autouse _bypass_ssrf_check stubs out the hook that reads url.host.
+    monkeypatch.setattr("core.signatures.check_url_safety", check_url_safety)
+
+    with pytest.raises(httpx.RequestError) as exc_info:
+        HttpSignature.signed_request(
+            uri=EMOJI_PUNYCODE_URI,
+            body=None,
+            private_key=keypair["private_key"],
+            key_id=keypair["public_key_id"],
+            method="get",
+        )
+    assert isinstance(exc_info.value, httpx.ConnectError)
+    assert "Invalid IDNA host" in str(exc_info.value)
