@@ -232,6 +232,92 @@ def test_handle_needs_fetch_falls_back_to_title_tag(httpx_mock, config_system):
 @pytest.mark.httpx_mock(
     assert_all_requests_were_expected=False, can_send_already_matched_responses=True
 )
+def test_handle_needs_fetch_strips_nul_bytes(httpx_mock, config_system):
+    html = (
+        "<html><head><title>T\x00itle</title>"
+        '<meta property="og:description" content="Line one\x00line two"/>'
+        '<meta property="og:image" content="https://example.com/i\x00.jpg"/>'
+        "</head></html>"
+    )
+    httpx_mock.add_response(
+        url="https://example.com/nul",
+        headers={"Content-Type": "text/html"},
+        content=html.encode(),
+    )
+    card = PreviewCard.objects.create(url="https://example.com/nul")
+    with patch(
+        "socket.getaddrinfo", return_value=[(2, 1, 0, "", ("93.184.216.34", 443))]
+    ):
+        result = PreviewCardStates.handle_needs_fetch(card)
+    card.refresh_from_db()
+    assert result == PreviewCardStates.fetched
+    assert card.title == "Title"
+    assert card.description == "Line oneline two"
+    assert card.image_url == "https://example.com/i.jpg"
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(
+    assert_all_requests_were_expected=False, can_send_already_matched_responses=True
+)
+def test_handle_needs_fetch_drops_out_of_range_dimensions(httpx_mock, config_system):
+    html = (
+        '<html><head><meta property="og:image" content="https://example.com/i.jpg"/>'
+        '<meta property="og:image:width" content="99999999999"/>'
+        '<meta property="og:image:height" content="-5"/>'
+        "</head></html>"
+    )
+    httpx_mock.add_response(
+        url="https://example.com/dims",
+        headers={"Content-Type": "text/html"},
+        text=html,
+    )
+    card = PreviewCard.objects.create(url="https://example.com/dims")
+    with patch(
+        "socket.getaddrinfo", return_value=[(2, 1, 0, "", ("93.184.216.34", 443))]
+    ):
+        result = PreviewCardStates.handle_needs_fetch(card)
+    card.refresh_from_db()
+    assert result == PreviewCardStates.fetched
+    assert card.image_url == "https://example.com/i.jpg"
+    assert card.image_width is None
+    assert card.image_height is None
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(
+    assert_all_requests_were_expected=False, can_send_already_matched_responses=True
+)
+def test_handle_needs_fetch_unsavable_value_fails_permanently(
+    httpx_mock, config_system
+):
+    httpx_mock.add_response(
+        url="https://example.com/bad",
+        headers={"Content-Type": "text/html"},
+        text="<html></html>",
+    )
+    card = PreviewCard.objects.create(url="https://example.com/bad")
+    with (
+        patch(
+            "socket.getaddrinfo",
+            return_value=[(2, 1, 0, "", ("93.184.216.34", 443))],
+        ),
+        patch(
+            "activities.models.preview_card._parse_og_tags",
+            return_value={"og:title": "bad\x00title"},
+        ),
+    ):
+        result = PreviewCardStates.handle_needs_fetch(card)
+    assert result == PreviewCardStates.fetch_failed
+    card.refresh_from_db()
+    assert card.title == ""
+    assert card.fetched_at is None
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(
+    assert_all_requests_were_expected=False, can_send_already_matched_responses=True
+)
 def test_handle_needs_fetch_non_html_returns_fetch_failed(httpx_mock, config_system):
     httpx_mock.add_response(
         url="https://example.com/image.png",
@@ -383,6 +469,18 @@ def test_attach_preview_card_creates_and_links(identity, config_system):
     assert post.preview_card is not None
     assert post.preview_card.url == "https://example.com/article"
     assert post.preview_card.state == "needs_fetch"
+
+
+@pytest.mark.django_db
+def test_attach_preview_card_skips_overlong_url(identity, config_system):
+    url = "https://example.com/" + "a" * 2100
+    post = Post.create_local(
+        author=identity, content=f'<p><a href="{url}">{url}</a></p>'
+    )
+    _attach_preview_card(post.pk, post.content)
+    post.refresh_from_db()
+    assert post.preview_card is None
+    assert not PreviewCard.objects.exists()
 
 
 @pytest.mark.django_db

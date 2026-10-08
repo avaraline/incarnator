@@ -7,6 +7,7 @@ from pytest_httpx import HTTPXMock
 from core.files import check_url_safety
 from core.models import Config
 from users.models import Domain, Identity, User
+from users.models.identity import IdentityStates
 from users.views.identity import CreateIdentity
 
 
@@ -546,6 +547,85 @@ def test_fetch_webfinger_url(httpx_mock: HTTPXMock, config_system):
 
 
 @pytest.mark.django_db
+@pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
+def test_fetch_webfinger_xrd(httpx_mock: HTTPXMock, config_system):
+    httpx_mock.add_response(
+        url="https://example.com/.well-known/host-meta",
+        status_code=404,
+    )
+    httpx_mock.add_response(
+        url="https://example.com/.well-known/webfinger?resource=acct:test@example.com",
+        headers={"Content-Type": "application/xrd+xml"},
+        content=(
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<XRD xmlns="http://docs.oasis-open.org/ns/xri/xrd-1.0">'
+            b"<Subject>acct:test@example.com</Subject>"
+            b'<Link rel="self" type="application/activity+json"'
+            b' href="https://example.com/users/9u8410yv8ddh0gfg"/>'
+            b'<Link rel="http://webfinger.net/rel/profile-page" type="text/html"'
+            b' href="https://example.com/@test"/>'
+            b"</XRD>"
+        ),
+    )
+    assert Identity.fetch_webfinger("test@example.com") == (
+        "https://example.com/users/9u8410yv8ddh0gfg",
+        "test@example.com",
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
+def test_fetch_webfinger_unparseable(httpx_mock: HTTPXMock, config_system):
+    httpx_mock.add_response(
+        url="https://example.com/.well-known/host-meta",
+        status_code=404,
+    )
+    httpx_mock.add_response(
+        url="https://example.com/.well-known/webfinger?resource=acct:test@example.com",
+        headers={"Content-Type": "text/html"},
+        content=b"<!DOCTYPE html>\n<html lang='en'>\n<head>\n<meta charset='utf-8'>\n",
+    )
+    with pytest.raises(ValueError, match="JSON parse error fetching webfinger"):
+        Identity.fetch_webfinger("test@example.com")
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
+def test_fetch_webfinger_strips_nul(httpx_mock: HTTPXMock, config_system):
+    httpx_mock.add_response(
+        url="https://example.com/.well-known/host-meta",
+        status_code=404,
+    )
+    httpx_mock.add_response(
+        url="https://example.com/.well-known/webfinger?resource=acct:test@example.com",
+        headers={"Content-Type": "application/jrd+json"},
+        content=(
+            b'{"subject": "acct:te\\u0000st@example.com", "links": [{"rel": "self",'
+            b' "type": "application/activity+json",'
+            b' "href": "https://example.com/users/te\\u0000st"}]}'
+        ),
+    )
+    assert Identity.fetch_webfinger("test@example.com") == (
+        "https://example.com/users/test",
+        "test@example.com",
+    )
+
+
+def test_parse_webfinger_xrd_without_subject():
+    assert (
+        Identity.parse_webfinger_xrd(
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<XRD xmlns="http://docs.oasis-open.org/ns/xri/xrd-1.0">'
+            b'<Link rel="self" type="application/activity+json"'
+            b' href="https://example.com/users/1"/>'
+            b"</XRD>"
+        )
+        is None
+    )
+    assert Identity.parse_webfinger_xrd(b"") is None
+
+
+@pytest.mark.django_db
 def test_attachment_to_ap(identity: Identity, config_system):
     """
     Tests identity attachment conversion to AP format.
@@ -651,7 +731,7 @@ def test_fetch_actor_invalid_idna_host(config_system, monkeypatch, settings):
     """
     An actor on an unencodable host is unfetchable, so fetch_actor reports
     failure instead of letting a raw idna error escape to Stator, which had
-    inbox_message logging an error on every retry (NEODB-SOCIAL-7VE / 7VF).
+    inbox_message logging an error on every retry.
     """
     original = settings.SETUP.NO_FEDERATION
     settings.SETUP.NO_FEDERATION = False
@@ -665,3 +745,407 @@ def test_fetch_actor_invalid_idna_host(config_system, monkeypatch, settings):
         assert identity.fetch_actor() is False
     finally:
         settings.SETUP.NO_FEDERATION = original
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
+def test_fetch_actor_handle_already_taken(httpx_mock, config_system, monkeypatch):
+    # Lemmy can publish a user and community with the same preferredUsername.
+    domain = Domain.get_remote_domain("lemmy.example")
+    Identity.objects.create(
+        actor_uri="https://lemmy.example/c/books",
+        username="books",
+        domain=domain,
+        local=False,
+    )
+    other = Identity.objects.create(
+        actor_uri="https://lemmy.example/u/books",
+        local=False,
+    )
+    httpx_mock.add_response(
+        url="https://lemmy.example/u/books",
+        headers={"Content-Type": "application/activity+json"},
+        json={
+            "@context": ["https://www.w3.org/ns/activitystreams"],
+            "id": "https://lemmy.example/u/books",
+            "type": "Person",
+            "preferredUsername": "books",
+            "inbox": "https://lemmy.example/u/books/inbox",
+        },
+    )
+
+    assert other.fetch_actor() is False
+
+    other.refresh_from_db()
+    assert other.username is None
+    assert other.domain_id is None
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
+def test_fetch_actor_rejects_alias_actor_uri(httpx_mock, config_system, monkeypatch):
+    canonical = Identity.objects.create(
+        actor_uri="https://example.com/ruben",
+        local=False,
+    )
+    alias = Identity.objects.create(
+        actor_uri="https://example.com/users/ruben",
+        local=False,
+    )
+    httpx_mock.add_response(
+        url="https://example.com/users/ruben",
+        headers={"Content-Type": "application/activity+json"},
+        json={
+            "@context": ["https://www.w3.org/ns/activitystreams"],
+            "id": "https://example.com/ruben",
+            "type": "Person",
+            "preferredUsername": "ruben",
+            "inbox": "https://example.com/ruben/inbox",
+        },
+    )
+
+    assert alias.fetch_actor() is False
+
+    alias.refresh_from_db()
+    assert alias.username is None
+    assert alias.domain_id is None
+    # The handle is still free for the actor that claims that id
+    canonical.refresh_from_db()
+    assert canonical.username is None
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
+def test_fetch_actor_keeps_host_handle_when_webfinger_does_not_loop_back(
+    httpx_mock, config_system
+):
+    # WordPress may point WebFinger at a separate Mastodon account; that handle is not ours.
+    identity = Identity.objects.create(
+        actor_uri="https://blog.example/?author=35",
+        local=False,
+    )
+    httpx_mock.add_response(
+        url="https://blog.example/?author=35",
+        headers={"Content-Type": "application/activity+json"},
+        json={
+            "@context": ["https://www.w3.org/ns/activitystreams"],
+            "id": "https://blog.example/?author=35",
+            "type": "Person",
+            "preferredUsername": "luciana",
+            "inbox": "https://blog.example/inbox",
+        },
+        is_reusable=True,
+    )
+    httpx_mock.add_response(
+        url="https://blog.example/.well-known/host-meta",
+        status_code=404,
+        is_reusable=True,
+    )
+    httpx_mock.add_response(
+        url="https://blog.example/.well-known/webfinger?resource=acct:luciana@blog.example",
+        json={
+            "subject": "acct:luciana@other.example",
+            "links": [
+                {
+                    "rel": "self",
+                    "type": "application/activity+json",
+                    "href": "https://other.example/users/luciana",
+                },
+            ],
+        },
+        is_reusable=True,
+    )
+
+    assert identity.fetch_actor()
+
+    identity.refresh_from_db()
+    assert identity.username == "luciana"
+    assert identity.domain_id == "blog.example"
+
+    # The check must hold on every refresh, not only on the first fetch, or
+    # the next one moves the row onto the other actor's handle
+    assert identity.fetch_actor()
+
+    identity.refresh_from_db()
+    assert identity.username == "luciana"
+    assert identity.domain_id == "blog.example"
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
+def test_fetch_actor_keeps_stored_handle_when_webfinger_does_not_loop_back(
+    httpx_mock, config_system
+):
+    # Legacy handles must survive refresh even when current WebFinger cannot verify them.
+    domain = Domain.get_remote_domain("other.example")
+    identity = Identity.objects.create(
+        actor_uri="https://blog.example/?author=35",
+        username="luciana",
+        domain=domain,
+        name="Old Name",
+        local=False,
+    )
+    httpx_mock.add_response(
+        url="https://blog.example/?author=35",
+        headers={"Content-Type": "application/activity+json"},
+        json={
+            "@context": ["https://www.w3.org/ns/activitystreams"],
+            "id": "https://blog.example/?author=35",
+            "type": "Person",
+            "preferredUsername": "luciana",
+            "inbox": "https://blog.example/inbox",
+            "name": "New Name",
+        },
+    )
+    httpx_mock.add_response(
+        url="https://blog.example/.well-known/host-meta",
+        status_code=404,
+    )
+    httpx_mock.add_response(
+        url="https://blog.example/.well-known/webfinger?resource=acct:luciana@blog.example",
+        json={
+            "subject": "acct:luciana@other.example",
+            "links": [
+                {
+                    "rel": "self",
+                    "type": "application/activity+json",
+                    "href": "https://other.example/users/luciana",
+                },
+            ],
+        },
+    )
+
+    assert identity.fetch_actor()
+
+    identity.refresh_from_db()
+    assert identity.name == "New Name"
+    assert identity.username == "luciana"
+    assert identity.domain_id == "other.example"
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
+def test_fetch_actor_still_refreshes_alias_that_already_holds_a_handle(
+    httpx_mock, config_system
+):
+    domain = Domain.get_remote_domain("example.com")
+    identity = Identity.objects.create(
+        actor_uri="https://example.com/users/ruben",
+        username="ruben",
+        domain=domain,
+        name="Old Name",
+        local=False,
+    )
+    httpx_mock.add_response(
+        url="https://example.com/users/ruben",
+        headers={"Content-Type": "application/activity+json"},
+        json={
+            "@context": ["https://www.w3.org/ns/activitystreams"],
+            "id": "https://example.com/ruben",
+            "type": "Person",
+            "preferredUsername": "ruben",
+            "inbox": "https://example.com/ruben/inbox",
+            "name": "New Name",
+        },
+    )
+
+    assert identity.fetch_actor()
+
+    identity.refresh_from_db()
+    assert identity.name == "New Name"
+    assert identity.username == "ruben"
+    assert identity.domain_id == "example.com"
+
+
+@pytest.mark.django_db
+def test_by_actor_uri_resolves_an_alias_to_its_canonical_identity(config_system):
+    domain = Domain.get_remote_domain("example.com")
+    canonical = Identity.objects.create(
+        actor_uri="https://example.com/ruben",
+        username="ruben",
+        domain=domain,
+        local=False,
+    )
+    alias = Identity.objects.create(
+        actor_uri="https://example.com/users/ruben",
+        local=False,
+        canonical=canonical,
+    )
+
+    assert Identity.by_actor_uri(alias.actor_uri).pk == canonical.pk
+    assert Identity.by_actor_uri(canonical.actor_uri).pk == canonical.pk
+
+
+@pytest.mark.django_db
+def test_alias_uri_is_accepted_by_the_activity_handlers(config_system, identity):
+    from activities.models import Post, PostInteraction, PostInteractionStates
+    from core.exceptions import ActorMismatchError
+    from users.models import Block, Follow
+
+    domain = Domain.get_remote_domain("remote.example")
+    canonical = Identity.objects.create(
+        actor_uri="https://remote.example/ruben",
+        username="ruben",
+        domain=domain,
+        local=False,
+        inbox_uri="https://remote.example/ruben/inbox",
+    )
+    alias_uri = "https://remote.example/users/ruben"
+    Identity.objects.create(
+        actor_uri=alias_uri,
+        local=False,
+        canonical=canonical,
+    )
+
+    follow = Follow.objects.create(source=canonical, target=identity)
+    Follow.handle_undo_ap(
+        {
+            "type": "Undo",
+            "actor": alias_uri,
+            "object": {
+                "type": "Follow",
+                "id": follow.uri or f"{alias_uri}#follows/1",
+                "actor": alias_uri,
+                "object": identity.actor_uri,
+            },
+        }
+    )
+
+    block = Block.objects.create(source=canonical, target=identity, mute=False)
+    Block.handle_undo_ap(
+        {
+            "type": "Undo",
+            "actor": alias_uri,
+            "object": {
+                "type": "Block",
+                "id": block.uri or f"{alias_uri}#blocks/1",
+                "actor": alias_uri,
+                "object": identity.actor_uri,
+            },
+        }
+    )
+    assert not Block.objects.filter(pk=block.pk).exists()
+
+    post = Post.objects.create(
+        author=identity,
+        local=True,
+        content="<p>hi</p>",
+        object_uri="https://example.com/posts/1",
+    )
+    interaction = PostInteraction.objects.create(
+        identity=canonical,
+        post=post,
+        type=PostInteraction.Types.like,
+        object_uri=f"{alias_uri}#likes/1",
+        state=PostInteractionStates.fanned_out,
+    )
+    PostInteraction.handle_undo_ap(
+        {
+            "type": "Undo",
+            "actor": alias_uri,
+            "object": {
+                "type": "Like",
+                "id": interaction.object_uri,
+                "actor": alias_uri,
+                "object": post.object_uri,
+            },
+        }
+    )
+    interaction.refresh_from_db()
+    assert interaction.state == "undone_fanned_out"
+
+    # A stranger is still a stranger
+    other = Identity.objects.create(
+        actor_uri="https://remote.example/someone",
+        username="someone",
+        domain=domain,
+        local=False,
+    )
+    assert not canonical.is_actor_uri(other.actor_uri)
+    with pytest.raises(ActorMismatchError):
+        Post.handle_delete_ap(
+            {
+                "type": "Delete",
+                "actor": other.actor_uri,
+                "object": post.object_uri,
+            }
+        )
+
+
+@pytest.mark.django_db
+def test_pruneidentities_keeps_rows_that_resolve_an_alias(config_system, settings):
+    # Pruning an empty alias would undo the repair when a peer next addresses its old URI.
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    settings.SETUP.REMOTE_PRUNE_HORIZON = 30
+    domain = Domain.get_remote_domain("remote.example")
+    canonical = Identity.objects.create(
+        actor_uri="https://remote.example/ruben",
+        username="ruben",
+        domain=domain,
+        local=False,
+    )
+    alias = Identity.objects.create(
+        actor_uri="https://remote.example/users/ruben",
+        local=False,
+        canonical=canonical,
+    )
+    unused = Identity.objects.create(
+        actor_uri="https://remote.example/nobody",
+        local=False,
+    )
+
+    with pytest.raises(SystemExit):
+        call_command("pruneidentities", stdout=StringIO())
+
+    assert Identity.objects.filter(pk=alias.pk).exists()
+    assert not Identity.objects.filter(pk=unused.pk).exists()
+    # And the identity the alias names, which holds nothing of its own either:
+    # deleting it would null the alias out and strand the actor
+    assert Identity.objects.filter(pk=canonical.pk).exists()
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(
+    assert_all_requests_were_expected=False,
+    assert_all_responses_were_requested=False,
+)
+def test_a_merged_alias_is_never_refetched(httpx_mock, config_system):
+    domain = Domain.get_remote_domain("remote.example")
+    canonical = Identity.objects.create(
+        actor_uri="https://remote.example/ruben",
+        username="ruben",
+        domain=domain,
+        local=False,
+    )
+    alias = Identity.objects.create(
+        actor_uri="https://remote.example/users/ruben",
+        local=False,
+        canonical=canonical,
+    )
+    httpx_mock.add_response(url=alias.actor_uri, status_code=410, is_reusable=True)
+
+    assert alias.fetch_actor() is False
+    assert Identity.objects.filter(pk=alias.pk).exists()
+    assert Identity.by_actor_uri(alias.actor_uri).pk == canonical.pk
+    # And stator leaves it alone rather than retrying the retired endpoint
+    assert IdentityStates.handle_outdated(alias) == IdentityStates.updated
+
+
+@pytest.mark.django_db
+@pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
+def test_a_gone_actor_is_deleted(httpx_mock, config_system, monkeypatch):
+    domain = Domain.get_remote_domain("remote.example")
+    gone = Identity.objects.create(
+        actor_uri="https://remote.example/users/gone",
+        username="gone",
+        domain=domain,
+        local=False,
+    )
+    httpx_mock.add_response(url=gone.actor_uri, status_code=410)
+
+    assert gone.fetch_actor() is False
+
+    assert not Identity.objects.filter(pk=gone.pk).exists()

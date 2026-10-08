@@ -2063,3 +2063,17 @@ form .post {
 .field .hidden {
     display: none;
 }
+
+.message-thread {
+  padding: 1rem 0;
+  border-bottom: 1px solid var(--color-text-dull);
+  overflow-wrap: anywhere;
+}
+.message-thread h2 { font-size: 1rem; }
+.message-unread { font-size: 0.8rem; color: var(--color-highlight); }
+.post .content pre { overflow-x: auto; padding: 0.75rem; }
+.post .content blockquote { border-left: 3px solid var(--color-highlight); padding-left: 1rem; margin-left: 0; }
+.post .content ul, .post .content ol { padding-left: 1.5rem; }
+
+form .poll-settings label { display: flex; align-items: center; gap: 0.6rem; margin: 1rem 0; }
+form .poll-settings input[type="checkbox"] { width: auto; margin: 0; accent-color: var(--color-highlight); }

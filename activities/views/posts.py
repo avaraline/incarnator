@@ -12,6 +12,10 @@ from activities.models import Post, PostInteraction, PostStates, QuoteAuthorizat
 from activities.services import PostService
 from core.decorators import cache_page_by_ap_json
 from core.ld import canonicalise
+from activities.views.conversations import (
+    direct_post_for_signed_fetch,
+    private_json_response,
+)
 from users.models import Identity
 from users.shortcuts import by_handle_or_404
 
@@ -41,7 +45,15 @@ class Individual(TemplateView):
     post_obj: Post
 
     def get(self, request, handle, post_id):
-        self.identity, self.post_obj = post_for_page(request, handle, post_id)
+        try:
+            self.identity, self.post_obj = post_for_page(request, handle, post_id)
+        except Http404:
+            if not request.ap_json or settings.SETUP.NO_FEDERATION:
+                raise
+            direct_post = direct_post_for_signed_fetch(request, handle, post_id)
+            if direct_post is None:
+                raise
+            return private_json_response(direct_post.to_ap())
         # If they're coming in looking for JSON, they want the actor
         if request.ap_json:
             # Return post JSON

@@ -31,6 +31,7 @@ dependencies = [
     "sentry-sdk>=2.44.0",
     "urlman>=2.0.1",
     "uvicorn>=0.29.0",
+    "websockets>=13",
     "whitenoise>=6.6.0",
     "pywebpush>=2.0.0",
 ]

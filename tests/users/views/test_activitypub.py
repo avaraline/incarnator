@@ -1,9 +1,12 @@
 import pytest
 from activities.models import Post
+from django.conf import settings
+from django.core.cache import cache
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 
-from users.models import InboxMessage
+from users.models import Domain, InboxMessage
 
 
 @pytest.mark.django_db
@@ -208,3 +211,34 @@ def test_outbox_bounded_queries(client, identity, other_identity, config_system)
         '"in_reply_to" IN',
     ):
         assert sum(fragment in s for s in sql) <= 1, fragment
+
+
+@pytest.mark.django_db
+def test_webfinger_gone_for_deleted_identity(client, identity, monkeypatch):
+    monkeypatch.setattr(settings.SETUP, "NO_FEDERATION", False)
+
+    response = client.get("/.well-known/webfinger?resource=acct:test@example.com")
+    assert response.status_code == 200
+
+    identity.deleted = timezone.now()
+    identity.save()
+    # The view is cache_page()d, so a peer keeps the stale 200 for up to
+    # cache_timeout_page_default seconds after the deletion.
+    cache.clear()
+
+    response = client.get("/.well-known/webfinger?resource=acct:test@example.com")
+    assert response.status_code == 410
+
+
+@pytest.mark.django_db
+def test_nodeinfo_only_on_local_domains(client, domain):
+    response = client.get("/.well-known/nodeinfo", HTTP_HOST="example.com")
+    assert response.status_code == 200
+    assert response.json()["links"][0]["href"] == ("https://example.com/nodeinfo/2.0/")
+
+    # a web-only alias, before and after a stray fetch stored it as remote
+    response = client.get("/.well-known/nodeinfo", HTTP_HOST="alias.example.org")
+    assert response.status_code == 404
+    Domain.get_remote_domain("alias.example.org")
+    response = client.get("/.well-known/nodeinfo", HTTP_HOST="alias.example.org")
+    assert response.status_code == 404

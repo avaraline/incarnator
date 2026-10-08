@@ -1,9 +1,14 @@
+from unittest.mock import patch
+
 import pytest
+from django.db import DataError
 from pytest_httpx import HTTPXMock
 
 from activities.models import Hashtag, Post, PostStates
 from activities.models.post_types import QuestionData
+from core.exceptions import ActivityPubFormatError
 from users.models import Identity, InboxMessage
+from users.models.inbox_message import InboxMessageStates
 
 
 @pytest.mark.django_db
@@ -426,6 +431,80 @@ def test_content_map_question(remote_identity: Identity):
 
 
 @pytest.mark.django_db
+def test_by_ap_drops_overlong_uris(remote_identity):
+    post = Post.by_ap(
+        data={
+            "id": "https://remote.test/posts/long-1/",
+            "type": "Note",
+            "content": "Hello",
+            "attributedTo": "https://remote.test/test-actor/",
+            "url": "https://remote.test/" + "u" * 2100,
+            "inReplyTo": "https://remote.test/" + "r" * 600,
+            "tag": [{"type": "Mention", "href": "https://remote.test/" + "m" * 600}],
+            "published": "2024-01-15T12:00:00Z",
+        },
+        create=True,
+    )
+    assert post.url == "https://remote.test/posts/long-1/"
+    assert post.in_reply_to is None
+    assert not post.mentions.exists()
+
+
+@pytest.mark.django_db
+def test_by_ap_skips_mentions_without_usable_href(remote_identity):
+    post = Post.by_ap(
+        data={
+            "id": "https://remote.test/posts/mentions-1/",
+            "type": "Note",
+            "content": "Hello",
+            "attributedTo": "https://remote.test/test-actor/",
+            "tag": [
+                {"type": "Mention", "name": "@missing"},
+                {"type": "Mention", "href": None},
+                {"type": "Mention", "href": {"id": "https://remote.test/x/"}},
+                {"type": "Mention", "href": "https://remote.test/test-actor/"},
+            ],
+        },
+        create=True,
+    )
+    assert list(post.mentions.all()) == [remote_identity]
+
+
+@pytest.mark.django_db
+def test_by_ap_rejects_overlong_id(remote_identity):
+    with pytest.raises(ActivityPubFormatError):
+        Post.by_ap(
+            data={
+                "id": "https://remote.test/posts/" + "x" * 2100,
+                "type": "Note",
+                "content": "Hello",
+                "attributedTo": "https://remote.test/test-actor/",
+            },
+            create=True,
+        )
+    assert not Post.objects.filter(author=remote_identity).exists()
+
+
+@pytest.mark.django_db
+def test_inbox_unsavable_value_fails_permanently(remote_identity):
+    message = InboxMessage.objects.create(
+        message={
+            "id": "https://remote.test/activities/1",
+            "type": "Create",
+            "actor": "https://remote.test/test-actor/",
+            "object": {
+                "id": "https://remote.test/posts/1/",
+                "type": "Note",
+                "content": "Hello",
+                "attributedTo": "https://remote.test/test-actor/",
+            },
+        }
+    )
+    with patch.object(Post, "handle_create_ap", side_effect=DataError("too long")):
+        assert InboxMessageStates.handle_received(message) == InboxMessageStates.errored
+
+
+@pytest.mark.django_db
 def test_by_ap_attributed_to_object(remote_identity):
     """
     Tests that by_ap handles attributedTo as a full Actor object (dict)
@@ -691,8 +770,8 @@ def test_post_targets_to_ap(
         assert ap_dict["to"] == [identity.followers_uri]
         assert ap_dict["cc"] == [other_identity.actor_uri]
     elif visibility == Post.Visibilities.mentioned:
-        assert "to" not in ap_dict
-        assert ap_dict["cc"] == [other_identity.actor_uri]
+        assert ap_dict["to"] == [other_identity.actor_uri]
+        assert "cc" not in ap_dict
 
 
 @pytest.mark.django_db
@@ -745,6 +824,10 @@ def test_article_web_view_shows_cover_and_links_tags(remote_identity):
         (
             {"url": {"type": "Link", "href": "https://remote.test/c.jpg"}},
             "https://remote.test/c.jpg",
+        ),
+        (
+            {"type": "Link", "href": "https://remote.test/f.jpg"},
+            "https://remote.test/f.jpg",
         ),
         (
             [{"url": "https://remote.test/d.jpg"}, "ignored"],

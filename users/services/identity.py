@@ -1,9 +1,7 @@
 import concurrent.futures
 import logging
 
-import httpx
 from django.conf import settings
-from django.core.exceptions import MultipleObjectsReturned
 from django.db import models, transaction
 from django.template.defaultfilters import linebreaks_filter
 
@@ -14,7 +12,8 @@ from activities.models import (
     PostInteraction,
     PostInteractionStates,
 )
-from core.files import resize_image
+from core.exceptions import ActivityPubError
+from core.files import make_safe_client, resize_image
 from core.html import FediverseHtmlParser
 from stator.exceptions import TryAgainLater
 from users.models import (
@@ -227,35 +226,41 @@ class IdentityService:
             ),
         }
 
-    def sync_pins(self, object_uris):
+    def sync_pins(self, object_uris: list[str]) -> None:
         if not object_uris or self.identity.domain.blocked:
             return
 
         with transaction.atomic():
-            for object_uri in object_uris:
-                try:
-                    post = Post.by_object_uri(object_uri, fetch=True)
-                    PostInteraction.objects.get_or_create(
-                        type=PostInteraction.Types.pin,
-                        identity=self.identity,
-                        post=post,
-                        state__in=PostInteractionStates.group_active(),
-                    )
-                except MultipleObjectsReturned as exc:
-                    logger.exception("%s on %s", exc, object_uri)
-                    pass
-                except Post.DoesNotExist:
-                    # ignore 404s...
-                    pass
-                except TryAgainLater:
-                    # don't wait for it now, it'll be synced on next refresh
-                    pass
-            for removed in PostInteraction.objects.filter(
+            uris = set(object_uris)
+            local_posts = Post.objects.in_bulk(uris, field_name="object_uri")
+            pinned_post_ids = set()
+            for pin in PostInteraction.objects.filter(
                 type=PostInteraction.Types.pin,
                 identity=self.identity,
                 state__in=PostInteractionStates.group_active(),
-            ).exclude(post__object_uri__in=object_uris):
-                removed.transition_perform(PostInteractionStates.undone_fanned_out)
+            ).select_related("post"):
+                if pin.post.object_uri in uris:
+                    pinned_post_ids.add(pin.post_id)
+                else:
+                    pin.transition_perform(PostInteractionStates.undone_fanned_out)
+            for object_uri in object_uris:
+                try:
+                    post = local_posts.get(object_uri) or Post.by_object_uri(
+                        object_uri, fetch=True
+                    )
+                except Post.DoesNotExist:
+                    # ignore 404s...
+                    continue
+                except TryAgainLater:
+                    # don't wait for it now, it'll be synced on next refresh
+                    continue
+                if post.pk not in pinned_post_ids:
+                    PostInteraction.objects.create(
+                        type=PostInteraction.Types.pin,
+                        identity=self.identity,
+                        post=post,
+                    )
+                    pinned_post_ids.add(post.pk)
 
     @transaction.atomic
     def sync_tags(self, tags):
@@ -378,7 +383,11 @@ class IdentityService:
         username, domain = payload["target_handle"].split("@")
         target_identity = Identity.by_username_and_domain(username, domain, fetch=True)
         if target_identity is None:
-            raise ValueError(f"Cannot find identity to follow: {target_identity}")
+            # The handle does not resolve, so retrying cannot help; a remote that is
+            # only busy raises TryAgainLater from the webfinger fetch instead.
+            handle = payload["target_handle"]
+            logger.warning("Cannot find identity to follow: %s", handle)
+            raise ActivityPubError(f"Cannot find identity to follow: {handle}")
         # Follow!
         self.follow(target_identity=target_identity, boosts=payload.get("boosts", True))
 
@@ -425,10 +434,8 @@ class IdentityService:
             ),
         ]
         future_actions = {}
-        with httpx.Client(
-            timeout=settings.SETUP.REMOTE_TIMEOUT,
-            headers={"User-Agent": settings.TAKAHE_USER_AGENT},
-        ) as client:
+        # Every URL here comes from the remote actor document
+        with make_safe_client(timeout=settings.SETUP.REMOTE_TIMEOUT) as client:
             # TODO: move this to a global pool, or use stator executor
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=len(pipeline)

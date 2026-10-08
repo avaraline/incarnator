@@ -131,7 +131,10 @@ def test_parser(identity):
         find_hashtags=True,
         find_emojis=True,
     )
-    assert parser.html == "<p>List:</p><p>One<br>Two<br>Three</p><p>End!</p>"
+    assert (
+        parser.html
+        == "<p>List:</p><ul><li>One</li><li>Two</li><li>Three</li></ul><p>End!</p>"
+    )
     assert parser.plain_text == "List:\n\nOne\nTwo\nThree\n\nEnd!"
 
 
@@ -272,3 +275,176 @@ def test_parser_link_scheme_validation():
         '<a href="/local/path">local</a>',
     )
     assert 'href="/local/path"' in parser.html
+
+
+def test_parser_keeps_rich_structure():
+
+    parser = FediverseHtmlParser("<ol><li>First</li><li>Second</li></ol>")
+    assert parser.html == "<ol><li>First</li><li>Second</li></ol>"
+    assert parser.plain_text == "First\nSecond"
+
+    parser = FediverseHtmlParser(
+        "<p>They said:</p><blockquote><p>a quote</p></blockquote><p>end</p>"
+    )
+    assert (
+        parser.html
+        == "<p>They said:</p><blockquote><p>a quote</p></blockquote><p>end</p>"
+    )
+
+    parser = FediverseHtmlParser(
+        "<p>This is <strong>bold</strong>, <em>italic</em>, <code>code</code>"
+        " and <del>struck</del></p>"
+    )
+    assert parser.html == (
+        "<p>This is <strong>bold</strong>, <em>italic</em>, <code>code</code>"
+        " and <del>struck</del></p>"
+    )
+    assert parser.plain_text == "This is bold, italic, code and struck"
+
+    # Headings are demoted rather than passed through
+    parser = FediverseHtmlParser("<h2>Title</h2><p>body</p>")
+    assert parser.html == "<p><strong>Title</strong></p><p>body</p>"
+    assert parser.plain_text == "Title\n\nbody"
+
+    # Tags outside the allow list are still dropped, keeping their text
+    parser = FediverseHtmlParser("<table><tr><td>cell</td></tr></table>")
+    assert parser.html == "cell"
+    parser = FediverseHtmlParser("<p>H<sub>2</sub>O</p>")
+    assert parser.html == "<p>H2O</p>"
+
+    # Attributes are dropped from everything we pass through
+    parser = FediverseHtmlParser(
+        '<ul class="x" onclick="evil()"><li style="color:red">y</li></ul>'
+    )
+    assert parser.html == "<ul><li>y</li></ul>"
+
+
+def test_parser_preserves_pre_newlines():
+
+    parser = FediverseHtmlParser("<pre><code>def f():\n    pass</code></pre>")
+    assert parser.html == "<pre><code>def f():\n    pass</code></pre>"
+    assert parser.plain_text == "def f():\n    pass"
+
+    parser = FediverseHtmlParser("<p>one\ntwo</p>")
+    assert parser.html == "<p>onetwo</p>"
+
+
+def test_parser_does_not_linkify_literal_content():
+
+    parser = FediverseHtmlParser(
+        "<pre><code>#include &lt;stdio.h&gt; https://example.com/x</code></pre>",
+        find_hashtags=True,
+    )
+    assert parser.html == (
+        "<pre><code>#include &lt;stdio.h&gt; https://example.com/x</code></pre>"
+    )
+    assert parser.hashtags == set()
+
+    # ...but a hashtag outside the code block is still found
+    parser = FediverseHtmlParser("<p>#real</p><code>#fake</code>", find_hashtags=True)
+    assert parser.hashtags == {"real"}
+
+
+def test_parser_balances_output():
+
+    assert FediverseHtmlParser("<p>a</p><pre>rest").html == "<p>a</p><pre>rest</pre>"
+    assert FediverseHtmlParser("<ul><li>x").html == "<ul><li>x</li></ul>"
+    assert FediverseHtmlParser("<strong>x").html == "<strong>x</strong>"
+
+    # Implicit closes, the way a browser would read them
+    assert FediverseHtmlParser("<ul><li>a<li>b</ul>").html == (
+        "<ul><li>a</li><li>b</li></ul>"
+    )
+    assert FediverseHtmlParser("<p>a<p>b").html == "<p>a</p><p>b</p>"
+    assert FediverseHtmlParser("<p>a<ul><li>b</ul>").html == (
+        "<p>a</p><ul><li>b</li></ul>"
+    )
+
+    # Crossed tags close in the right order
+    assert FediverseHtmlParser("<p><strong>bold</p>more").html == (
+        "<p><strong>bold</strong></p>more"
+    )
+
+    # Unmatched closing tags are ignored
+    assert FediverseHtmlParser("</p></ul><p>ok</p>").html == "<p>ok</p>"
+
+    # Nesting is capped, and still balanced at the cap
+    deep = "<blockquote>" * 60 + "x" + "</blockquote>" * 60
+    html = FediverseHtmlParser(deep).html
+    assert html.count("<blockquote>") == FediverseHtmlParser.MAX_NESTING
+    assert html.count("</blockquote>") == FediverseHtmlParser.MAX_NESTING
+
+    # An <li> the cap drops must not leave a line behind in the plain text
+    over = "<ul>" * 40 + "<li>a</li>" + "</ul>" * 40
+    parser = FediverseHtmlParser(over)
+    assert "<li>" not in parser.html
+    assert parser.plain_text == "a"
+
+    # Nor may closing a block the cap dropped add a paragraph break. Only the
+    # blockquotes that reached the output may break the text.
+    cap = FediverseHtmlParser.MAX_NESTING
+    over = "<blockquote>" * 40 + "x" + "</blockquote>" * 40 + "<p>after</p>"
+    parser = FediverseHtmlParser(over)
+    assert parser.html.count("<blockquote>") == cap
+    assert parser.plain_text == "x" + "\n\n" * cap + "after"
+
+    # A stray closing tag breaks nothing either
+    assert FediverseHtmlParser("a</blockquote>b").plain_text == "ab"
+
+
+def test_parser_keeps_link_labels_plain():
+
+    parser = FediverseHtmlParser(
+        '<p><a href="https://example.com/"><strong>bold link</strong></a></p>'
+    )
+    assert parser.html == (
+        '<p><a href="https://example.com/" rel="nofollow">bold link</a></p>'
+    )
+
+
+@pytest.mark.django_db
+def test_parser_mention_without_profile_uri(remote_identity):
+
+    remote_identity.profile_uri = None
+    remote_identity.save()
+
+    parser = FediverseHtmlParser(
+        "<p>hi @test@remote.test</p>", mentions=[remote_identity]
+    )
+    assert 'href="/@test@remote.test/"' in parser.html
+    assert parser.plain_text == "hi @test@remote.test"
+    assert parser.mentions == {"test@remote.test"}
+
+
+@pytest.mark.parametrize(
+    "link_text",
+    [
+        "#t&lt;img src=x onerror=alert(1)&gt;",
+        '#t"onmouseover="alert(1)',
+    ],
+)
+def test_parser_hashtag_link_text_is_escaped(link_text):
+
+    parser = FediverseHtmlParser(
+        f'<a href="https://example.com/">{link_text}</a>', find_hashtags=True
+    )
+    assert "<img" not in parser.html
+    assert 'href="https://example.com/"' in parser.html
+    assert '"onmouseover' not in parser.html
+    assert parser.hashtags == set()
+
+
+def test_parser_create_hashtag_escapes():
+    parser = FediverseHtmlParser("", uri_domain='a.example"><b')
+    assert parser.create_hashtag('#a"<b>') == (
+        '<a href="https://a.example&quot;&gt;&lt;b/tags/a&quot;&lt;b&gt;/"'
+        ' class="mention hashtag" rel="tag">#a&quot;&lt;b&gt;</a>'
+    )
+
+
+def test_parser_valueless_link_attributes():
+
+    parser = FediverseHtmlParser("<a href>x</a>")
+    assert parser.html == '<a href="#" rel="nofollow">x</a>'
+    parser = FediverseHtmlParser('<a class href="https://a.example/">x</a>')
+    assert parser.html == '<a href="https://a.example/" rel="nofollow">x</a>'

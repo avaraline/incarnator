@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django import forms
 from django.conf import settings
 from django.contrib import messages
@@ -6,6 +8,7 @@ from django.utils import timezone
 from django.views.generic import FormView
 
 from activities.models import Post, PostAttachment, PostAttachmentStates, TimelineEvent
+from activities.models.post_types import POLL_MAX_OPTIONS, POLL_MAX_OPTION_CHARS
 from core.files import blurhash_image, resize_image
 from core.models import Config
 from users.views.base import IdentityViewMixin
@@ -71,6 +74,53 @@ class Compose(IdentityViewMixin, FormView):
                 }
             ),
         )
+
+        poll_options = forms.CharField(
+            required=False,
+            widget=forms.Textarea(attrs={"rows": 4}),
+            help_text=f"Optional: one option per line, 2–{POLL_MAX_OPTIONS} options, up to {POLL_MAX_OPTION_CHARS} characters each. Polls cannot include an image.",
+        )
+        poll_duration = forms.TypedChoiceField(
+            required=False,
+            coerce=int,
+            initial=86400,
+            choices=[
+                (300, "5 minutes"),
+                (3600, "1 hour"),
+                (86400, "1 day"),
+                (604800, "7 days"),
+            ],
+        )
+        poll_multiple = forms.BooleanField(
+            required=False, label="Allow multiple choices"
+        )
+        poll_hide_totals = forms.BooleanField(
+            required=False, label="Hide totals until the poll ends"
+        )
+
+        def clean(self):
+            data = super().clean()
+            options = data.get("poll_options", "").splitlines()
+            if options:
+                if not 2 <= len(options) <= POLL_MAX_OPTIONS:
+                    self.add_error(
+                        "poll_options", f"Use between 2 and {POLL_MAX_OPTIONS} options."
+                    )
+                elif any(
+                    not option.strip() or len(option) > POLL_MAX_OPTION_CHARS
+                    for option in options
+                ):
+                    self.add_error(
+                        "poll_options",
+                        f"Each option must contain 1–{POLL_MAX_OPTION_CHARS} characters.",
+                    )
+                elif len(set(options)) != len(options):
+                    self.add_error("poll_options", "Options must be distinct.")
+                if data.get("image"):
+                    self.add_error("image", "A poll cannot include an image.")
+                if not data.get("poll_duration"):
+                    self.add_error("poll_duration", "Choose when the poll ends.")
+            return data
 
         image_caption = forms.CharField(
             required=False,
@@ -178,12 +228,26 @@ class Compose(IdentityViewMixin, FormView):
             attachment.save()
             attachments.append(attachment)
         # Create the post
+        question = None
+        if form.cleaned_data.get("poll_options"):
+            question = {
+                "type": "Question",
+                "mode": "anyOf" if form.cleaned_data["poll_multiple"] else "oneOf",
+                "options": [
+                    {"name": name}
+                    for name in form.cleaned_data["poll_options"].splitlines()
+                ],
+                "end_time": timezone.now()
+                + timedelta(seconds=form.cleaned_data["poll_duration"]),
+                "hide_totals": form.cleaned_data["poll_hide_totals"],
+            }
         post = Post.create_local(
             author=self.identity,
             content=form.cleaned_data["text"],
             summary=form.cleaned_data.get("content_warning"),
             visibility=form.cleaned_data["visibility"],
             attachments=attachments,
+            question=question,
         )
         # Add their own timeline event for immediate visibility
         TimelineEvent.add_post(self.identity, post)

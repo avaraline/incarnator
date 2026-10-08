@@ -1,4 +1,4 @@
-from activities.views import compose, debug, posts, timelines
+from activities.views import compose, conversations, debug, messages, posts, timelines
 from api.views import oauth
 from core import views as core
 from django.conf import settings as djsettings
@@ -292,6 +292,15 @@ urlpatterns = [
         timelines.Notifications.as_view(),
         name="notifications",
     ),
+    path("@<handle>/messages/", messages.Messages.as_view(), name="messages"),
+    path(
+        "@<handle>/messages/new/", messages.MessageCompose.as_view(), name="message_new"
+    ),
+    path(
+        "@<handle>/messages/<int:conversation_id>/",
+        messages.MessageCompose.as_view(),
+        name="message",
+    ),
     # Posts
     path("@<handle>/compose/", compose.Compose.as_view(), name="compose"),
     path(
@@ -310,6 +319,10 @@ urlpatterns = [
     path(
         "@<handle>/posts/<int:post_id>/quote-auth/<int:auth_id>/",
         posts.QuoteAuthorizationView.as_view(),
+    ),
+    path(
+        "@<handle>/conversations/<int:conversation_id>/",
+        conversations.ConversationCollection.as_view(),
     ),
     # Authentication
     path("auth/login/", auth.Login.as_view(), name="login"),

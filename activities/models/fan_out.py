@@ -1,11 +1,22 @@
+import logging
+
 import httpx
 from django.db import models
 
 from activities.models.timeline_event import TimelineEvent
+from core.exceptions import ActivityPubDeliveryError
 from core.ld import canonicalise
+from stator.exceptions import TryAgainLater
 from stator.models import State, StateField, StateGraph, StatorModel
 from users.models import Block, FollowStates, Identity
 from users.models.system_actor import SystemActor
+
+logger = logging.getLogger(__name__)
+
+
+# How long a Delete(actor) keeps being retried at an unreachable peer, against
+# the three days every other fan-out gets.
+IDENTITY_DELETED_MAX_AGE = 86400
 
 
 class FanOutStates(StateGraph):
@@ -67,6 +78,32 @@ class FanOutStates(StateGraph):
         )
 
     @classmethod
+    def _deliver(
+        cls,
+        sender: "Identity | SystemActor",
+        instance: "FanOut",
+        body: dict,
+    ) -> State | None:
+        """Deliver a signed activity; return a terminal state for permanent refusal.
+        Return None on success, or raise TryAgainLater for retryable failures."""
+        try:
+            sender.signed_request(
+                method="post",
+                uri=(instance.identity.shared_inbox_uri or instance.identity.inbox_uri),
+                body=body,
+            )
+        except httpx.RequestError:
+            raise TryAgainLater() from None
+        except ActivityPubDeliveryError as error:
+            if error.retryable:
+                logger.info("FanOut %s was deferred: %s", instance.pk, error)
+                raise TryAgainLater() from None
+            # Resending the same activity cannot resolve any other 4xx
+            logger.info("FanOut %s was refused: %s", instance.pk, error)
+            return cls.failed
+        return None
+
+    @classmethod
     def handle_new(cls, instance: "FanOut"):
         """
         Sends the fan-out to the right inbox.
@@ -88,10 +125,8 @@ class FanOutStates(StateGraph):
                     .exists()
                 ):
                     return cls.skipped
-                # Make a timeline event directly
-                # If it's a reply, we only add it if we follow at least one
-                # of the people mentioned AND the author, or we're mentioned,
-                # or it's a reply to us or the author
+                # A reply is added only when we follow its author and it
+                # mentions someone we follow, the author, or ourselves.
                 add = True
                 mentioned = {identity.id for identity in post.mentions.all()}
                 if post.in_reply_to:
@@ -145,33 +180,19 @@ class FanOutStates(StateGraph):
             case (FanOut.Types.post, False):
                 post = instance.subject_post
                 # Sign it (HTTP and, for public posts, LD) and send it
-                try:
-                    post.author.signed_request(
-                        method="post",
-                        uri=(
-                            instance.identity.shared_inbox_uri
-                            or instance.identity.inbox_uri
-                        ),
-                        body=post.to_fan_out_ap(instance.type),
-                    )
-                except httpx.RequestError:
-                    return
+                if state := cls._deliver(
+                    post.author, instance, post.to_fan_out_ap(instance.type)
+                ):
+                    return state
 
             # Handle sending remote posts update
             case (FanOut.Types.post_edited, False):
                 post = instance.subject_post
                 # Sign it (HTTP and, for public posts, LD) and send it
-                try:
-                    post.author.signed_request(
-                        method="post",
-                        uri=(
-                            instance.identity.shared_inbox_uri
-                            or instance.identity.inbox_uri
-                        ),
-                        body=post.to_fan_out_ap(instance.type),
-                    )
-                except httpx.RequestError:
-                    return
+                if state := cls._deliver(
+                    post.author, instance, post.to_fan_out_ap(instance.type)
+                ):
+                    return state
 
             # Handle deleting local posts
             case (FanOut.Types.post_deleted, True):
@@ -183,20 +204,12 @@ class FanOutStates(StateGraph):
             # Handle sending remote post deletes
             case (FanOut.Types.post_deleted, False):
                 post = instance.subject_post
-                # Send it to the remote inbox
-                try:
-                    post.author.signed_request(
-                        method="post",
-                        uri=(
-                            instance.identity.shared_inbox_uri
-                            or instance.identity.inbox_uri
-                        ),
-                        body=post.to_fan_out_ap(instance.type),
-                    )
-                except ValueError:
-                    pass  # ignore 401 when identity deletion is processed by remote earlier
-                except httpx.RequestError:
-                    return
+                # Send it to the remote inbox; a 4xx is expected if the remote
+                # processed our identity deletion earlier
+                if state := cls._deliver(
+                    post.author, instance, post.to_fan_out_ap(instance.type)
+                ):
+                    return state
 
             # Handle local boosts/likes
             case (FanOut.Types.interaction, True):
@@ -242,23 +255,16 @@ class FanOutStates(StateGraph):
             case (FanOut.Types.interaction, False):
                 interaction = instance.subject_post_interaction
                 # Send it to the remote inbox
-                try:
-                    if interaction.type == interaction.Types.vote:
-                        body = interaction.to_create_ap()
-                    elif interaction.type == interaction.Types.pin:
-                        body = interaction.to_add_ap()
-                    else:
-                        body = interaction.to_ap()
-                    interaction.identity.signed_request(
-                        method="post",
-                        uri=(
-                            instance.identity.shared_inbox_uri
-                            or instance.identity.inbox_uri
-                        ),
-                        body=canonicalise(body),
-                    )
-                except httpx.RequestError:
-                    return
+                if interaction.type == interaction.Types.vote:
+                    body = interaction.to_create_ap()
+                elif interaction.type == interaction.Types.pin:
+                    body = interaction.to_add_ap()
+                else:
+                    body = interaction.to_ap()
+                if state := cls._deliver(
+                    interaction.identity, instance, canonicalise(body)
+                ):
+                    return state
 
             # Handle undoing local boosts/likes
             case (FanOut.Types.undo_interaction, True):  # noqa:F841
@@ -292,53 +298,43 @@ class FanOutStates(StateGraph):
             case (FanOut.Types.undo_interaction, False):  # noqa:F841
                 interaction = instance.subject_post_interaction
                 # Send an undo to the remote inbox
-                try:
-                    if interaction.type == interaction.Types.pin:
-                        body = interaction.to_remove_ap()
-                    else:
-                        body = interaction.to_undo_ap()
-                    interaction.identity.signed_request(
-                        method="post",
-                        uri=(
-                            instance.identity.shared_inbox_uri
-                            or instance.identity.inbox_uri
-                        ),
-                        body=canonicalise(body),
-                    )
-                except httpx.RequestError:
-                    return
+                if interaction.type == interaction.Types.pin:
+                    body = interaction.to_remove_ap()
+                else:
+                    body = interaction.to_undo_ap()
+                if state := cls._deliver(
+                    interaction.identity, instance, canonicalise(body)
+                ):
+                    return state
 
             # Handle sending identity edited to remote
             case (FanOut.Types.identity_edited, False):
                 identity = instance.subject_identity
-                try:
-                    identity.signed_request(
-                        method="post",
-                        uri=(
-                            instance.identity.shared_inbox_uri
-                            or instance.identity.inbox_uri
-                        ),
-                        body=canonicalise(instance.subject_identity.to_update_ap()),
-                    )
-                except httpx.RequestError:
-                    return
+                if state := cls._deliver(
+                    identity, instance, canonicalise(identity.to_update_ap())
+                ):
+                    return state
 
             # Handle sending identity deleted to remote
             case (FanOut.Types.identity_deleted, False):
                 identity = instance.subject_identity
                 try:
-                    identity.signed_request(
-                        method="post",
-                        uri=(
-                            instance.identity.shared_inbox_uri
-                            or instance.identity.inbox_uri
-                        ),
-                        body=canonicalise(instance.subject_identity.to_delete_ap()),
-                    )
-                except httpx.RequestError:
-                    return
-                except ValueError:
-                    pass  # do not retry if 4xx
+                    if state := cls._deliver(
+                        identity, instance, canonicalise(identity.to_delete_ap())
+                    ):
+                        return state
+                except TryAgainLater:
+                    # A peer that has refused the news for a day is not going
+                    # to take it on the 400th attempt, and the actor endpoint
+                    # tells it the same thing whenever it asks.
+                    if instance.state_age > IDENTITY_DELETED_MAX_AGE:
+                        logger.info(
+                            "FanOut %s abandoned: peer unreachable for %ss",
+                            instance.pk,
+                            int(instance.state_age),
+                        )
+                        return cls.failed
+                    raise
 
             # Handle move for local follower
             case (FanOut.Types.identity_moved, True):
@@ -355,17 +351,10 @@ class FanOutStates(StateGraph):
             case (FanOut.Types.identity_moved, False):
                 identity = instance.subject_identity
                 if identity.has_moved() and identity.aliases:
-                    try:
-                        identity.signed_request(
-                            method="post",
-                            uri=(
-                                instance.identity.shared_inbox_uri
-                                or instance.identity.inbox_uri
-                            ),
-                            body=canonicalise(identity.to_move_ap()),
-                        )
-                    except httpx.RequestError:
-                        return
+                    if state := cls._deliver(
+                        identity, instance, canonicalise(identity.to_move_ap())
+                    ):
+                        return state
 
             # Sending identity edited/deleted to local is a no-op
             case (FanOut.Types.identity_edited, True):
@@ -385,36 +374,24 @@ class FanOutStates(StateGraph):
 
             case (FanOut.Types.tag_featured, False):
                 identity = instance.subject_identity
-                try:
-                    identity.signed_request(
-                        method="post",
-                        uri=(
-                            instance.identity.shared_inbox_uri
-                            or instance.identity.inbox_uri
-                        ),
-                        body=canonicalise(instance.subject_hashtag.to_add_ap(identity)),
-                    )
-                except httpx.RequestError:
-                    return
+                if state := cls._deliver(
+                    identity,
+                    instance,
+                    canonicalise(instance.subject_hashtag.to_add_ap(identity)),
+                ):
+                    return state
 
             case (FanOut.Types.tag_unfeatured, True):
                 pass
 
             case (FanOut.Types.tag_unfeatured, False):
                 identity = instance.subject_identity
-                try:
-                    identity.signed_request(
-                        method="post",
-                        uri=(
-                            instance.identity.shared_inbox_uri
-                            or instance.identity.inbox_uri
-                        ),
-                        body=canonicalise(
-                            instance.subject_hashtag.to_remove_ap(identity)
-                        ),
-                    )
-                except httpx.RequestError:
-                    return
+                if state := cls._deliver(
+                    identity,
+                    instance,
+                    canonicalise(instance.subject_hashtag.to_remove_ap(identity)),
+                ):
+                    return state
 
             # Forward a third-party LD-signed activity concerning a local
             # thread (AP 7.1.2). The document is re-sent exactly as
@@ -423,19 +400,10 @@ class FanOutStates(StateGraph):
             case (FanOut.Types.forward, False):
                 if not instance.subject_document:
                     return cls.skipped
-                try:
-                    SystemActor().signed_request(
-                        method="post",
-                        uri=(
-                            instance.identity.shared_inbox_uri
-                            or instance.identity.inbox_uri
-                        ),
-                        body=instance.subject_document,
-                    )
-                except ValueError:
-                    pass  # remote refused the forward; it's best-effort
-                except httpx.RequestError:
-                    return
+                if state := cls._deliver(
+                    SystemActor(), instance, instance.subject_document
+                ):
+                    return state
 
             # Forwards are only ever created for remote followers
             case (FanOut.Types.forward, True):

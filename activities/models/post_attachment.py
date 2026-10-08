@@ -1,10 +1,15 @@
+import logging
 from functools import partial
 
 from django.db import models
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 
 from core.uploads import upload_namer
 from core.uris import ProxyAbsoluteUrl, RelativeAbsoluteUrl
 from stator.models import State, StateField, StateGraph, StatorModel
+
+logger = logging.getLogger(__name__)
 
 
 class PostAttachmentStates(StateGraph):
@@ -187,3 +192,16 @@ class PostAttachment(StatorModel):
             "description": self.name,
             "blurhash": self.blurhash,
         }
+
+
+@receiver(post_delete, sender=PostAttachment)
+def delete_attachment_files(sender, instance: PostAttachment, **kwargs):
+    """Reclaim files when the row is deleted, after Delete activities can serialize them.
+    Storage failures must not abort database deletion."""
+    for blob in (instance.file, instance.thumbnail):
+        if not blob:
+            continue
+        try:
+            blob.delete(save=False)
+        except Exception as e:
+            logger.warning("Error deleting attachment file %s: %s", blob.name, e)

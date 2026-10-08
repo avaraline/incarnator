@@ -5,6 +5,9 @@
     <div class="post-banner">
         {% include "identity/_identity_banner.html" with identity=post.author %}
         <div>
+            {% if message_view %}
+                <time title="{{ post.published|default:post.created }}">{{ post.published|default:post.created|timedeltashort }}</time>
+            {% else %}
             <time _="on click go url {% if link_original %}{{ post.url }}{% else %}{{ post.urls.view }}{% endif %} then halt">
                 {% if post.visibility == 0 %}
                     <i class="visibility fa-solid fa-earth-oceania" title="Public" aria-label="public"></i>
@@ -23,6 +26,7 @@
                     <a href="{% if link_original %}{{ post.url }}{% else %}{{ post.urls.view }}{% endif %}" title="{{ post.created }}">{{ post.created | timedeltashort }}</a>
                 {% endif %}
             </time>
+            {% endif %}
         </div>
     </div>
 
@@ -36,7 +40,11 @@
         {% include "activities/_preview_card.html" %}
 
         {% if post.type == "Question" %}
-            {% include "activities/_type_question.html" with sanitized_content=post.safe_content_note_local interactive=True %}
+            {% if message_view %}
+                {% include "activities/_type_question.html" with sanitized_content=post.safe_content_note_local interactive=False %}
+            {% else %}
+                {% include "activities/_type_question.html" with sanitized_content=post.safe_content_note_local interactive=True %}
+            {% endif %}
         {% else %}
             {{ post.safe_content_local }}
         {% endif %}
@@ -79,6 +87,7 @@
         </div>
     {% endif %}
 
+    {% if not message_view %}
     <div class="actions">
         <a title="Replies" href="{% if not post.local and post.url %}{{ post.url }}{% else %}{{ post.urls.view }}{% endif %}">
             <i class="fa-solid fa-reply"></i>
@@ -111,5 +120,6 @@
             {% endif %}
         </menu>
     </div>
+    {% endif %}
 
 </div>

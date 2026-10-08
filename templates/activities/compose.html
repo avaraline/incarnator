@@ -18,6 +18,15 @@
             {% include "forms/_field.html" with field=form.image %}
             {% include "forms/_field.html" with field=form.image_caption %}
         </fieldset>
+        <fieldset>
+            <legend>Poll</legend>
+            {% include "forms/_field.html" with field=form.poll_options %}
+            {% include "forms/_field.html" with field=form.poll_duration %}
+            <div class="poll-settings">
+                <label for="{{ form.poll_multiple.id_for_label }}">{{ form.poll_multiple }} Allow multiple choices</label>
+                <label for="{{ form.poll_hide_totals.id_for_label }}">{{ form.poll_hide_totals }} Hide totals until the poll ends</label>
+            </div>
+        </fieldset>
         <div class="buttons">
             <span id="character-counter">{{ config.post_length }}</span>
             <button id="post-button">{% if post %}Save Edits{% else %}Post{% endif %}</button>

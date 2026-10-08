@@ -53,6 +53,9 @@
             </a>
             <hr>
             <h3>Tools</h3>
+            <a href="{% url 'messages' handle=identity.handle %}" {% if section == 'messages' %}class="selected"{% endif %}>
+                <i class="fa-solid fa-envelope"></i><span>Messages</span>
+            </a>
             <a href="{% url "settings_follows" handle=identity.handle %}" {% if section == "follows" %}class="selected"{% endif %} title="Follows">
                 <i class="fa-solid fa-arrow-right-arrow-left"></i>
                 <span>Follows</span>
