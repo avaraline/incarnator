@@ -1,4 +1,5 @@
 import os
+import re
 import secrets
 import sys
 import urllib.parse
@@ -17,6 +18,7 @@ from pydantic import (
 )
 from pydantic_core import Url
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sentry_sdk.scrubber import DEFAULT_DENYLIST, EventScrubber
 
 from takahe import __version__
 
@@ -109,6 +111,12 @@ class Settings(BaseSettings):
 
     #: Set a secret key used to protect the stator. Randomized by default.
     STATOR_TOKEN: str = Field(default_factory=lambda: secrets.token_hex(128))
+
+    #: Enable the optional Mastodon streaming API and event publishing.
+    STREAMING_ENABLED: bool = False
+
+    #: Maximum concurrent database work per streaming worker.
+    STREAMING_DB_THREADS: int = Field(default=4, ge=1)
 
     #: If set, a list of allowed values for the HOST header. The default value
     #: of '*' means any host will be accepted.
@@ -379,6 +387,52 @@ if SETUP.USE_PROXY_HEADERS:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 
+# Scrub session cookies and OAuth credentials from error reports.
+SENTRY_DENYLIST = [
+    *DEFAULT_DENYLIST,
+    "sessionid",
+    "access_token",
+    "client_secret",
+    "refresh_token",
+]
+_SENTRY_SECRET_QUERY = re.compile(
+    r"(?:^|[?&;])(?:api_key|access_token|client_secret|key|token)=", re.IGNORECASE
+)
+
+
+def _sentry_strip_secret_query(data: dict, url_key: str, query_key: str) -> None:
+    url = data.get(url_key)
+    if isinstance(url, str) and _SENTRY_SECRET_QUERY.search(url):
+        data[url_key] = url.split("?", 1)[0]
+    query = data.get(query_key)
+    if isinstance(query, str) and _SENTRY_SECRET_QUERY.search(query):
+        data[query_key] = ""
+
+
+def sentry_before_send(event: dict, hint: dict) -> dict:
+    request = event.get("request")
+    if isinstance(request, dict):
+        request.pop("cookies", None)
+        headers = request.get("headers")
+        if isinstance(headers, dict):
+            for key in headers:
+                if key.lower() == "cookie":
+                    headers[key] = "[Filtered]"
+        _sentry_strip_secret_query(request, "url", "query_string")
+    for span in event.get("spans") or []:
+        data = span.get("data") if isinstance(span, dict) else None
+        if isinstance(data, dict):
+            _sentry_strip_secret_query(data, "url", "http.query")
+    return event
+
+
+def sentry_before_breadcrumb(crumb: dict, hint: dict) -> dict:
+    data = crumb.get("data")
+    if isinstance(data, dict):
+        _sentry_strip_secret_query(data, "url", "http.query")
+    return crumb
+
+
 if SETUP.SENTRY_DSN:
     from sentry_sdk.integrations.django import DjangoIntegration
     from sentry_sdk.integrations.httpx import HttpxIntegration
@@ -401,6 +455,12 @@ if SETUP.SENTRY_DSN:
         traces_sample_rate=SETUP.SENTRY_TRACES_SAMPLE_RATE,
         sample_rate=SETUP.SENTRY_SAMPLE_RATE,
         send_default_pii=True,
+        event_scrubber=EventScrubber(
+            denylist=SENTRY_DENYLIST, recursive=True, send_default_pii=True
+        ),
+        before_send=sentry_before_send,
+        before_send_transaction=sentry_before_send,
+        before_breadcrumb=sentry_before_breadcrumb,
         environment=SETUP.ENVIRONMENT,
         _experiments=sentry_experiments,
     )

@@ -35,6 +35,7 @@ from activities.models.post_types import (
     vote_value,
 )
 from activities.models.quote_authorization import QuoteAuthorization
+from api.streaming_events import publish_post
 from core.exceptions import ActivityPubFormatError, ActorMismatchError
 from core.html import ContentRenderer, FediverseHtmlParser
 from core.json import json_from_response
@@ -142,7 +143,10 @@ def _attach_preview_card(post_pk: int, content: str) -> None:
         return
 
     canonical_url = PreviewCard.strip_tracking_params(url)
-    if not canonical_url.startswith(("http://", "https://")):
+    if (
+        not canonical_url.startswith(("http://", "https://"))
+        or len(canonical_url) > PreviewCard._meta.get_field("url").max_length
+    ):
         Post.objects.filter(pk=post_pk).update(preview_card=None)
         return
 
@@ -220,13 +224,16 @@ class PostStates(StateGraph):
         """
         # Only fan out if the post was published in the last day or it's local
         # (we don't want to fan out anything older that that which is remote)
-        if instance.local or (timezone.now() - instance.published) < datetime.timedelta(
-            days=settings.FANOUT_LIMIT_DAYS
-        ):
+        recent = instance.local or (
+            timezone.now() - instance.published
+        ) < datetime.timedelta(days=settings.FANOUT_LIMIT_DAYS)
+        if recent:
             cls.targets_fan_out(instance, FanOut.Types.post)
         instance.ensure_hashtags()
         if instance.type not in instance.CONVERTED_TYPES:
             _attach_preview_card(instance.pk, instance.content)
+        if recent:
+            publish_post(instance, "update")
         if cls.needs_question_tracking(instance):
             return cls.question_open
         return cls.fanned_out
@@ -268,6 +275,7 @@ class PostStates(StateGraph):
         from .post_interaction import PostInteraction, PostInteractionStates
         from .timeline_event import TimelineEvent
 
+        publish_post(instance, "delete")
         TimelineEvent.objects.filter(subject_post=instance).delete()
         Bookmark.objects.filter(post=instance).delete()
         if instance.local:
@@ -305,6 +313,7 @@ class PostStates(StateGraph):
         instance.ensure_hashtags()
         if instance.type not in instance.CONVERTED_TYPES:
             _attach_preview_card(instance.pk, instance.content)
+        publish_post(instance, "status.update")
         if cls.needs_question_tracking(instance):
             question = instance.type_data
             if instance.local and question.last_distributed_tally != question.tally:
@@ -684,6 +693,7 @@ class Post(StatorModel):
                 name="ix_post_local_public_created",
             ),
             models.Index(fields=["url"], name="activities_post_url_idx"),
+            models.Index(fields=["author", "-id"], name="post_author_idneg"),
         ]
 
     class urls(urlman.Urls):
@@ -992,7 +1002,9 @@ class Post(StatorModel):
 
     @classmethod
     def mentions_from_content(cls, content, author) -> set[Identity]:
-        mention_hits = FediverseHtmlParser(content, find_mentions=True).mentions
+        mention_hits = FediverseHtmlParser(
+            linebreaks_filter(content), find_mentions=True
+        ).mentions
         mentions = set()
         for handle in mention_hits:
             handle = handle.lower()
@@ -1021,10 +1033,8 @@ class Post(StatorModel):
         Ensure any of the already parsed hashtags from this Post
         have a corresponding Hashtag record.
         """
-        # Ensure hashtags
         if self.hashtags:
-            for hashtag in self.hashtags:
-                Hashtag.ensure_hashtag(hashtag, update=True)
+            Hashtag.ensure_hashtags(self.hashtags, update=True)
 
     def calculate_stats(self, save=True):
         """
@@ -1276,10 +1286,19 @@ class Post(StatorModel):
             self.visibility == self.Visibilities.followers and self.author.followers_uri
         ):
             value["to"].append(self.author.followers_uri)
-        # Mentions
+        # Mentions. A direct post goes `to` its recipients, which is where
+        # Mastodon, GoToSocial and Pixelfed put them.
+        mention_field = "to" if self.visibility == self.Visibilities.mentioned else "cc"
         for mention in self.mentions.all():
             value["tag"].append(mention.to_ap_tag())
-            value["cc"].append(mention.actor_uri)
+            value[mention_field].append(mention.actor_uri)
+        if (
+            self.visibility == self.Visibilities.mentioned
+            and self.conversation
+            and self.conversation.uri
+        ):
+            value["context"] = self.conversation.uri
+            value["conversation"] = self.conversation.uri
         # Hashtags
         for hashtag in self.hashtags or []:
             value["tag"].append(
@@ -1322,7 +1341,7 @@ class Post(StatorModel):
         Returns the AP JSON to create this object
         """
         object = self.to_ap()
-        return {
+        activity = {
             "to": object.get("to", []),
             "cc": object.get("cc", []),
             "type": "Create",
@@ -1330,6 +1349,9 @@ class Post(StatorModel):
             "actor": self.author.actor_uri,
             "object": object,
         }
+        if self.visibility == self.Visibilities.mentioned:
+            activity["directMessage"] = True
+        return activity
 
     def to_update_ap(self):
         """
@@ -1480,6 +1502,18 @@ class Post(StatorModel):
     ### ActivityPub (inbound) ###
 
     @staticmethod
+    def _attributed_to_uris(value) -> list[str]:
+        """Every URI named by an AS ``attributedTo`` value, in order."""
+        values = value if isinstance(value, list) else [value]
+        uris: list[str] = []
+        for v in values:
+            if isinstance(v, dict):
+                v = v.get("id")
+            if isinstance(v, str):
+                uris.append(v)
+        return uris
+
+    @staticmethod
     def _primary_attributed_to(value):
         """Normalize an AS ``attributedTo`` value to a single URI string.
 
@@ -1493,12 +1527,7 @@ class Post(StatorModel):
         unrecognizable so the caller's structural check can raise.
         """
         if isinstance(value, list):
-            uris: list[str] = []
-            for v in value:
-                if isinstance(v, dict):
-                    v = v.get("id")
-                if isinstance(v, str):
-                    uris.append(v)
+            uris = Post._attributed_to_uris(value)
             if not uris:
                 return None
             # Pick the first candidate already known locally that's not
@@ -1549,6 +1578,7 @@ class Post(StatorModel):
             # object, or an array of either. WriteFreely emits
             # ``[author_person, blog_group]`` for blog posts; the author
             # is conventionally first, so we take the head.
+            attributed_uris = cls._attributed_to_uris(data.get("attributedTo"))
             data["attributedTo"] = cls._primary_attributed_to(data.get("attributedTo"))
             data["type"] = cls._primary_post_type(data.get("type"))
             # Ensure data has the primary fields of all Posts
@@ -1563,6 +1593,12 @@ class Post(StatorModel):
                 raise ActivityPubFormatError(
                     "Object's ID domain is different to its author"
                 )
+            if (
+                len(data["id"]) > cls._meta.get_field("object_uri").max_length
+                or len(data["attributedTo"])
+                > Identity._meta.get_field("actor_uri").max_length
+            ):
+                raise ActivityPubFormatError("Object or author URI is too long")
         except (TypeError, KeyError) as ex:
             raise cls.DoesNotExist(
                 "Object data is not a recognizable ActivityPub object"
@@ -1609,10 +1645,21 @@ class Post(StatorModel):
                     raise TryAgainLater()
             else:
                 raise cls.DoesNotExist(f"No post with ID {data['id']}", data)
+        if update and not created:
+            # Only the stored author may change a post, and local posts
+            # never take their content from inbound documents.
+            if post.local:
+                raise ActorMismatchError(f"Remote data for local post {post.pk}")
+            if not any(post.author.is_actor_uri(uri) for uri in attributed_uris):
+                raise ActorMismatchError(
+                    f"Object attributedTo does not include the author of post {post.pk}"
+                )
         if update or created:
             post.type = data["type"]
-            post.url, _ = get_ap_link(data.get("url"), preferred_media_type="text/html")
-            post.url = post.url or data["id"]
+            url, _ = get_ap_link(data.get("url"), preferred_media_type="text/html")
+            if not url or len(url) > cls._meta.get_field("url").max_length:
+                url = data["id"]
+            post.url = url
             if post.type == cls.Types.question:
                 post.type_data = PostTypeData(root=data).root
                 if not post.local and isinstance(post.type_data, QuestionData):
@@ -1655,6 +1702,13 @@ class Post(StatorModel):
             in_reply_to = data.get("inReplyTo")
             if isinstance(in_reply_to, dict):
                 in_reply_to = in_reply_to.get("id")
+            # Too long to store, so the reply link is dropped, as Mastodon
+            # does for a parent it cannot resolve
+            if (
+                isinstance(in_reply_to, str)
+                and len(in_reply_to) > cls._meta.get_field("in_reply_to").max_length
+            ):
+                in_reply_to = None
             post.in_reply_to = in_reply_to
             # Quote URL - check properties in priority order (FEP-044f).
             # BookWyrm overloads `quote` with the HTML quotation text rather
@@ -1700,7 +1754,14 @@ class Post(StatorModel):
             for tag in get_list(data, "tag"):
                 tag_type = tag["type"].lower()
                 if tag_type == "mention":
-                    mention_identity = Identity.by_actor_uri(tag["href"], create=True)
+                    href = tag.get("href")
+                    if (
+                        not isinstance(href, str)
+                        or not href
+                        or len(href) > Identity._meta.get_field("actor_uri").max_length
+                    ):
+                        continue
+                    mention_identity = Identity.by_actor_uri(href, create=True)
                     post.mentions.add(mention_identity)
                 elif tag_type in ["_:hashtag", "hashtag"]:
                     # kbin produces tags with 'tag' instead of 'name'
@@ -1788,7 +1849,9 @@ class Post(StatorModel):
             if post.visibility == Post.Visibilities.mentioned:
                 from activities.models.conversation import Conversation
 
-                Conversation.update_for_post(post)
+                Conversation.update_for_post(
+                    post, remote_uri=Conversation.remote_uri_from(data)
+                )
 
             # Potentially schedule a fetch of the reply parent, and recalculate
             # its stats if it's here already.
@@ -1868,6 +1931,21 @@ class Post(StatorModel):
                     ap_data = canonicalise(
                         json_data, include_security=True, outbound=False
                     )
+                    # A server may answer with a canonical id that differs
+                    # in path, but never with a document of another host.
+                    fetched_id = ap_data.get("id")
+                    fetched_host = (
+                        urlparse(fetched_id).hostname
+                        if isinstance(fetched_id, str)
+                        else None
+                    )
+                    if (
+                        not fetched_host
+                        or fetched_host != urlparse(object_uri).hostname
+                    ):
+                        raise cls.DoesNotExist(
+                            f"Document at {object_uri} has an id on another host"
+                        )
                     ap_data["_fetch_depth"] = fetch_depth
                     post = cls.by_ap(
                         ap_data,
@@ -1878,6 +1956,10 @@ class Post(StatorModel):
                 except (json.JSONDecodeError, ValueError, JsonLdError) as err:
                     raise cls.DoesNotExist(
                         f"Invalid ld+json response for {object_uri}"
+                    ) from err
+                except ActorMismatchError as err:
+                    raise cls.DoesNotExist(
+                        f"Document at {object_uri} cannot update its post"
                     ) from err
                 # We may need to fetch the author too
                 if post.author.state == IdentityStates.outdated:
@@ -1913,7 +1995,7 @@ class Post(StatorModel):
         ):
             return post
         if response.status_code in [404, 410]:
-            post.delete()
+            post.perform_remote_deletion()
             return None
         if response.status_code >= 400:
             return post
@@ -1923,7 +2005,7 @@ class Post(StatorModel):
         except json.JSONDecodeError, ValueError, JsonLdError:
             return post
         if str(ap_data.get("type", "")).lower() == "tombstone":
-            post.delete()
+            post.perform_remote_deletion()
             return None
         # Only accept the document that actually lives at this URI
         if ap_data.get("id") != object_uri:
@@ -1966,6 +2048,27 @@ class Post(StatorModel):
             )
 
     @classmethod
+    def _ensure_actor_attributed(cls, data: dict, verb: str) -> None:
+        """Require the signed actor to match an attributed author on the primary author's host.
+        WriteFreely allows either the author or blog in attributedTo to sign."""
+        attributed = data["object"]["attributedTo"]
+        actor = data["actor"]
+        if actor not in cls._attributed_to_uris(attributed):
+            raise ActorMismatchError(
+                f"{verb} actor does not match its Post object", data
+            )
+        primary = cls._primary_attributed_to(attributed)
+        actor_host = urlparse(actor).hostname
+        if (
+            not actor_host
+            or not isinstance(primary, str)
+            or urlparse(primary).hostname != actor_host
+        ):
+            raise ActorMismatchError(
+                f"{verb} actor is not on the host of its Post author", data
+            )
+
+    @classmethod
     def handle_create_ap(cls, data):
         """
         Handles an incoming create request
@@ -1973,20 +2076,7 @@ class Post(StatorModel):
         from . import TimelineEvent
 
         with transaction.atomic():
-            # Ensure the Create actor is among the Post's attributedTo
-            # entries. WriteFreely sends a list ``[author, blog]`` and the
-            # outer ``actor`` may be either one; accept any match rather
-            # than only the first URI.
-            attributed = data["object"]["attributedTo"]
-            if not isinstance(attributed, list):
-                attributed = [attributed]
-            attributed_ids = {cls._primary_attributed_to(v) for v in attributed} - {
-                None
-            }
-            if data["actor"] not in attributed_ids:
-                raise ActorMismatchError(
-                    "Create actor does not match its Post object", data
-                )
+            cls._ensure_actor_attributed(data, "Create")
             # Create it, stator will fan it out locally
             post = cls.by_ap(
                 data["object"], create=True, update=True, fetch_author=True
@@ -2001,25 +2091,19 @@ class Post(StatorModel):
         Handles an incoming update request
         """
         with transaction.atomic():
-            # Ensure the Update actor is among the Post's attributedTo
-            # entries (see ``handle_create_ap`` for the WriteFreely-list
-            # rationale).
-            attributed = data["object"]["attributedTo"]
-            if not isinstance(attributed, list):
-                attributed = [attributed]
-            attributed_ids = {cls._primary_attributed_to(v) for v in attributed} - {
-                None
-            }
-            if data["actor"] not in attributed_ids:
-                raise ActorMismatchError(
-                    "Update actor does not match its Post object", data
-                )
+            cls._ensure_actor_attributed(data, "Update")
             # Find it and update it
             try:
                 cls.by_ap(data["object"], create=False, update=True)
             except cls.DoesNotExist:
                 # We don't have a copy - assume we got a delete first and ignore.
                 pass
+
+    def perform_remote_deletion(self):
+        """Publish deletion while the post's audience is still available."""
+        with transaction.atomic():
+            publish_post(self, "delete")
+            self.delete()
 
     @classmethod
     def handle_delete_ap(cls, data):
@@ -2039,9 +2123,9 @@ class Post(StatorModel):
                 # It's already been deleted
                 return
             # Ensure the actor on the request authored the post
-            if not post.author.actor_uri == data["actor"]:
+            if not post.author.is_actor_uri(data["actor"]):
                 raise ActorMismatchError("Actor on delete does not match object")
-            post.delete()
+            post.perform_remote_deletion()
 
     @classmethod
     def handle_announced_activity_ap(cls, data):
@@ -2124,7 +2208,7 @@ class Post(StatorModel):
         if post.local:
             return
         # Only the author's own activities about their post are forwarded
-        if message.get("actor") != post.author.actor_uri:
+        if not post.author.is_actor_uri(message.get("actor")):
             return
         if post.visibility not in [
             cls.Visibilities.public,

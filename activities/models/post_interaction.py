@@ -517,6 +517,16 @@ class PostInteraction(StatorModel):
                 # post row (we are always inside a transaction here via
                 # handle_ap) so concurrent duplicate announces serialize.
                 if type == cls.Types.boost:
+                    # A boost would fan a private post out to the booster's
+                    # followers; only its author may boost it.
+                    if (
+                        post.visibility
+                        not in [Post.Visibilities.public, Post.Visibilities.unlisted]
+                        and post.author_id != identity.pk
+                    ):
+                        raise ActorMismatchError(
+                            f"Cannot boost non-public post {post.pk}"
+                        )
                     post = Post.objects.select_for_update().get(pk=post.pk)
                     existing = cls.objects.filter(
                         identity=identity,
@@ -571,7 +581,7 @@ class PostInteraction(StatorModel):
                 # Well I guess we don't need to undo it do we
                 return
             # Verify the actor matches
-            if data["actor"] != interaction.identity.actor_uri:
+            if not interaction.identity.is_actor_uri(data["actor"]):
                 raise ActorMismatchError("Actor mismatch on interaction undo")
             # Delete all events that reference it
             interaction.timeline_events.all().delete()

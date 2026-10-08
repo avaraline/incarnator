@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import ssl
 from functools import cached_property, partial
@@ -7,6 +8,7 @@ from urllib.parse import urlparse
 import httpx
 import urlman
 from django.conf import settings
+from django.core.cache import cache
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError, models, transaction
 from django.db.models.functions import Upper
@@ -19,7 +21,7 @@ from api.models.push import PushSubscription, PushType
 from core.exceptions import ActorMismatchError
 from core.files import SSRFAttemptError, check_url_safety
 from core.html import ContentRenderer, FediverseHtmlParser
-from core.json import json_from_response
+from core.json import clean_json, json_from_response
 from core.ld import (
     canonicalise,
     format_ld_date,
@@ -42,7 +44,7 @@ from core.uris import (
 )
 from stator.exceptions import TryAgainLater
 from stator.models import State, StateField, StateGraph, StatorModel
-from users.models.domain import Domain
+from users.models.domain import Domain, DomainStates
 from users.models.inbox_message import InboxMessage
 from users.models.system_actor import SystemActor
 
@@ -56,6 +58,9 @@ DEFAULT_ICON_STATIC_PATH = "img/avatar.png"
 # Width of Identity's remote-sourced CharField columns (name, username,
 # profile_uri, inbox_uri, ...).
 _REMOTE_FIELD_MAX_LENGTH = 500
+
+WEBFINGER_CONFIRMED_TTL = 7 * 24 * 3600
+WEBFINGER_REFUTED_TTL = 3600
 
 
 def _remote_text(value, max_length: int = _REMOTE_FIELD_MAX_LENGTH) -> str | None:
@@ -98,12 +103,15 @@ class IdentityStates(StateGraph):
 
     edited = State(try_interval=300, attempt_immediately=True)
     deleted = State(try_interval=300, attempt_immediately=True)
+    deleted_broadcasting = State(try_interval=300, attempt_immediately=True)
     deleted_fanned_out = State(externally_progressed=True)
 
     moved = State(try_interval=300, attempt_immediately=True)
     moved_fanned_out = State(externally_progressed=True)
 
+    deleted.transitions_to(deleted_broadcasting)
     deleted.transitions_to(deleted_fanned_out)
+    deleted_broadcasting.transitions_to(deleted_fanned_out)
 
     edited.transitions_to(updated)
     updated.transitions_to(edited)
@@ -122,7 +130,7 @@ class IdentityStates(StateGraph):
 
     @classmethod
     def group_deleted(cls):
-        return [cls.deleted, cls.deleted_fanned_out]
+        return [cls.deleted, cls.deleted_broadcasting, cls.deleted_fanned_out]
 
     @classmethod
     def targets_fan_out(cls, identity: "Identity", type_: str, broadcast=False) -> None:
@@ -131,17 +139,17 @@ class IdentityStates(StateGraph):
         from users.models import Follow
 
         if broadcast:
-            for target in (
-                Identity.objects.filter(local=False, shared_inbox_uri__isnull=False)
-                .exclude(state=IdentityStates.connection_issue)
-                .distinct("shared_inbox_uri")
-            ):
-                FanOut.objects.create(
-                    identity=target, type=type_, subject_identity=identity
-                )
+            FanOut.objects.bulk_create(
+                [
+                    FanOut(identity=target, type=type_, subject_identity=identity)
+                    for target in cls.acquainted_peers(identity)
+                ],
+                batch_size=500,
+            )
             return
         # Fan out to each target
         shared_inboxes = set()
+        fan_outs = []
         for follower in (
             Follow.objects.select_related("source", "target")
             .filter(target=identity)
@@ -152,12 +160,63 @@ class IdentityStates(StateGraph):
             if shared_uri and shared_uri in shared_inboxes:
                 continue
 
-            FanOut.objects.create(
-                identity=follower.source,
-                type=type_,
-                subject_identity=identity,
+            fan_outs.append(
+                FanOut(
+                    identity=follower.source,
+                    type=type_,
+                    subject_identity=identity,
+                )
             )
             shared_inboxes.add(shared_uri)
+        FanOut.objects.bulk_create(fan_outs, batch_size=500)
+
+    @classmethod
+    def acquainted_peers(cls, identity: "Identity") -> models.QuerySet["Identity"]:
+        """Return known remote peers, deduplicated by inbox, for durable deletion fan-outs."""
+        from activities.models import Post, PostInteraction
+
+        from users.models import Follow
+
+        peer = models.OuterRef("pk")
+        # Exists() rather than reverse-relation filters: four OR-ed multi-valued
+        # joins multiply their rows before the distinct removes them again, so a
+        # peer with many follows and interactions costs their product.
+        return (
+            Identity.objects.filter(local=False, shared_inbox_uri__isnull=False)
+            .filter(
+                models.Exists(Follow.objects.filter(source=peer, target=identity))
+                | models.Exists(Follow.objects.filter(source=identity, target=peer))
+                | models.Exists(
+                    PostInteraction.objects.filter(identity=peer, post__author=identity)
+                )
+                | models.Exists(
+                    Post.mentions.through.objects.filter(
+                        identity=peer, post__author=identity
+                    )
+                )
+            )
+            .exclude(state=IdentityStates.connection_issue)
+            .order_by("shared_inbox_uri")
+            .distinct("shared_inbox_uri")
+        )
+
+    @classmethod
+    def unacquainted_peer_inboxes(cls, identity: "Identity") -> list[str]:
+        """Return other reachable inboxes, deduplicated, for best-effort deletion.
+        Skip long-failing domains to avoid blocking DNS work exhausting the deadline."""
+        acquainted = cls.acquainted_peers(identity).values_list(
+            "shared_inbox_uri", flat=True
+        )
+        return list(
+            Identity.objects.filter(local=False, shared_inbox_uri__isnull=False)
+            .exclude(state=IdentityStates.connection_issue)
+            .exclude(domain__state=DomainStates.connection_issue)
+            .exclude(domain__blocked=True)
+            .exclude(shared_inbox_uri__in=list(acquainted))
+            .order_by("shared_inbox_uri")
+            .distinct("shared_inbox_uri")
+            .values_list("shared_inbox_uri", flat=True)
+        )
 
     @classmethod
     def handle_edited(cls, instance: "Identity"):
@@ -186,6 +245,7 @@ class IdentityStates(StateGraph):
         from activities.models import (
             FanOut,
             Post,
+            PostAttachment,
             PostInteraction,
             PostInteractionStates,
             PostStates,
@@ -193,23 +253,43 @@ class IdentityStates(StateGraph):
         )
 
         from users.models import (
+            AccountNote,
+            Block,
             Bookmark,
+            FeatureAuthorization,
             Follow,
             FollowStates,
             HashtagFeature,
             HashtagFollow,
+            List,
+            Marker,
             Report,
         )
 
         if not instance.local:
-            return cls.updated
+            # Nothing to delete or announce for someone else's actor. This has
+            # to be a state "deleted" can reach, or the transition raises and
+            # the row retries every try_interval for good.
+            return cls.deleted_fanned_out
 
-        # Delete local data
+        # Delete local data. The identity row itself is kept as a tombstone,
+        # so every cascade that hangs off it is dead code: anything keyed on
+        # this identity has to be removed by hand here.
         TimelineEvent.objects.filter(identity=instance).delete()
         Bookmark.objects.filter(identity=instance).delete()
         HashtagFollow.objects.filter(identity=instance).delete()
         HashtagFeature.objects.filter(identity=instance).delete()
         Report.objects.filter(source_identity=instance).delete()
+        # Blocks carry mutes too, and an account note is private text this
+        # identity wrote about someone else.
+        Block.objects.filter(source=instance).delete()
+        AccountNote.objects.filter(source=instance).delete()
+        List.objects.filter(identity=instance).delete()
+        Marker.objects.filter(identity=instance).delete()
+        FeatureAuthorization.objects.filter(identity=instance).delete()
+        # Collect unattached uploads here; they have no post to cascade from.
+        # Attached media must survive until Delete activities serialize and post rows go.
+        PostAttachment.objects.filter(author=instance, post__isnull=True).delete()
         # Nullify all fields and fanout
         instance.name = ""
         instance.summary = ""
@@ -233,6 +313,31 @@ class IdentityStates(StateGraph):
         for following in Follow.objects.filter(source=instance):
             following.transition_perform(FollowStates.undone)
 
+        return cls.deleted_broadcasting
+
+    @classmethod
+    def handle_deleted_broadcasting(cls, instance: "Identity"):
+        """Broadcast separately so retries never repeat irreversible account cleanup.
+        Duplicate Delete activities are harmless."""
+        from users.services.delete_broadcast import (
+            broadcast_identity_deletion,
+            identity_broadcast_lock,
+        )
+
+        if not instance.local:
+            return cls.deleted_fanned_out
+
+        with identity_broadcast_lock(instance.pk) as acquired:
+            if not acquired:
+                # Another replica's advisory lock outlives Stator's 300-second row lock.
+                # Leave the state retryable in case that replica dies before finishing.
+                logger.info(
+                    "Delete broadcast for %s is already running elsewhere", instance.pk
+                )
+                return None
+            broadcast_identity_deletion(
+                instance, cls.unacquainted_peer_inboxes(instance)
+            )
         return cls.deleted_fanned_out
 
     @classmethod
@@ -240,6 +345,10 @@ class IdentityStates(StateGraph):
         # Local identities never need fetching
         if identity.local:
             identity.calculate_stats()
+            return cls.updated
+        # A row kept only to resolve one of an actor's URIs holds nothing to
+        # refresh, and its endpoint is the other row's business
+        if identity.canonical_id:
             return cls.updated
         # Run the actor fetch and progress to updated if it succeeds
         if identity.fetch_actor():
@@ -336,6 +445,15 @@ class Identity(StatorModel):
     # A list of other actor URIs - if this account was moved, should contain
     # the one URI it was moved to.
     aliases = models.JSONField(blank=True, null=True)
+
+    # Retain alternate actor URIs so peers addressing them resolve to the canonical row.
+    canonical = models.ForeignKey(
+        "self",
+        blank=True,
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="alias_identities",
+    )
 
     # Calculated (or fetched) statistics: follower/post counts, etc.
     stats = models.JSONField(blank=True, null=True)
@@ -597,8 +715,9 @@ class Identity(StatorModel):
                     )
             except cls.DoesNotExist:
                 if fetch and not local:
-                    actor_uri, handle = cls.fetch_webfinger(f"{username}@{domain}")
-                    if handle is None:
+                    queried = f"{username}@{domain}"
+                    actor_uri, handle = cls.fetch_webfinger(queried)
+                    if handle is None or actor_uri is None:
                         return None
                     # See if this actually does match an existing actor
                     try:
@@ -606,7 +725,10 @@ class Identity(StatorModel):
                     except cls.DoesNotExist:
                         pass
                     # OK, make one
-                    username, domain = handle.split("@")
+                    if cls.confirm_webfinger_handle(actor_uri, queried, handle):
+                        username, claimed_domain = handle.split("@")
+                        if claimed_domain.lower() != domain:
+                            domain_instance = Domain.get_remote_domain(claimed_domain)
                     if not domain_instance:
                         domain_instance = Domain.get_remote_domain(domain)
                     return cls.objects.create(
@@ -622,7 +744,11 @@ class Identity(StatorModel):
         if not uri:
             raise cls.DoesNotExist("No actor_uri provided")
         try:
-            return cls.objects.get(actor_uri=uri)
+            identity = cls.objects.get(actor_uri=uri)
+            # A peer may go on addressing an actor by a URI we since learned
+            # is a second name for another row. One hop only: a merge resolves
+            # its own target first, so a chain never forms.
+            return identity.canonical or identity
         except cls.DoesNotExist:
             if create:
                 if transient:
@@ -641,6 +767,19 @@ class Identity(StatorModel):
                 raise cls.DoesNotExist(f"No identity found with actor_uri {uri}")
 
     ### Dynamic properties ###
+
+    @property
+    def resolved(self) -> "Identity":
+        """Resolve client-held alias IDs to the identity that now owns their traffic."""
+        return self.canonical or self
+
+    def is_actor_uri(self, uri: str) -> bool:
+        """Accept canonical and alias URIs so peers can undo actions using an old actor URI."""
+        if not uri:
+            return False
+        if uri == self.actor_uri:
+            return True
+        return self.alias_identities.filter(actor_uri=uri).exists()
 
     @property
     def name_or_handle(self):
@@ -985,7 +1124,12 @@ class Identity(StatorModel):
         # Remove all login tokens
         Authorization.objects.filter(identity=self).delete()
         Token.objects.filter(identity=self).delete()
-        # Remove all users from ourselves and mark deletion date
+        # Close logins that lose their last identity; keep multi-identity logins usable.
+        # Check before unlinking, which empties the relation.
+        for user in self.users.all():
+            if not user.identities.exclude(pk=self.pk).exists():
+                user.deleted = True
+                user.save(update_fields=["deleted"])
         self.users.set([])
         self.deleted = timezone.now()
         self.save()
@@ -1027,6 +1171,26 @@ class Identity(StatorModel):
                 pass
 
         return f"https://{domain}/.well-known/webfinger?resource={{uri}}"
+
+    @classmethod
+    def parse_webfinger_xrd(cls, content: bytes) -> dict | None:
+        """
+        Parses an XRD webfinger document into the JRD shape, or returns None
+        if it is not one. A server behind a cache that ignores Vary: Accept
+        can answer a JSON request with the XML variant of the same resource.
+        """
+        try:
+            parser = etree.XMLParser(resolve_entities=False, no_network=True)
+            tree = etree.fromstring(content, parser=parser)
+        except etree.ParseError:
+            return None
+        subject = tree.findtext(".//{*}Subject")
+        if not subject:
+            return None
+        return {
+            "subject": subject.strip(),
+            "links": [dict(link.attrib) for link in tree.findall(".//{*}Link")],
+        }
 
     @classmethod
     def fetch_webfinger(cls, handle: str) -> tuple[str | None, str | None]:
@@ -1075,15 +1239,17 @@ class Identity(StatorModel):
                 return None, None
 
         try:
-            data = response.json()
+            data = clean_json(response.json())
         except ValueError:
-            # Some servers return these with a 200 status code!
-            if b"not found" in response.content.lower():
-                return None, None
-            raise ValueError(
-                "JSON parse error fetching webfinger",
-                response.content,
-            )
+            data = cls.parse_webfinger_xrd(response.content)
+            if data is None:
+                # Some servers return these with a 200 status code!
+                if b"not found" in response.content.lower():
+                    return None, None
+                raise ValueError(
+                    "JSON parse error fetching webfinger",
+                    response.content,
+                )
         try:
             if data["subject"].startswith("acct:"):
                 data["subject"] = data["subject"][5:]
@@ -1099,6 +1265,46 @@ class Identity(StatorModel):
         return None, None
 
     @classmethod
+    def confirm_webfinger_handle(
+        cls, actor_uri: str, queried: str, subject: str
+    ) -> bool | None:
+        """Return True if confirmed, False if refuted, or None if verification was unavailable.
+        A foreign handle requires that domain's own WebFinger to name the same actor."""
+        parts = subject.split("@")
+        if len(parts) != 2 or not parts[0]:
+            return None
+        claimed_domain = parts[1].lower()
+        if claimed_domain == queried.split("@")[-1].lower():
+            return True
+        if not Domain.is_valid_domain(claimed_domain):
+            return False
+        claimed = Domain.get_domain(claimed_domain)
+        if claimed and claimed.local:
+            return False
+        # every refresh of a split-domain actor would repeat these requests
+        digest = hashlib.sha256(f"{actor_uri}\n{subject.lower()}".encode()).hexdigest()
+        cache_key = f"webfinger_confirm:{digest}"
+        cached = cache.get(cache_key)
+        if isinstance(cached, bool):
+            return cached
+        try:
+            confirmed_actor, confirmed_subject = cls.fetch_webfinger(subject)
+        except TryAgainLater, ValueError:
+            return None
+        if confirmed_actor is None:
+            return None
+        confirmed = (
+            confirmed_actor == actor_uri
+            and (confirmed_subject or "").lower() == subject.lower()
+        )
+        cache.set(
+            cache_key,
+            confirmed,
+            WEBFINGER_CONFIRMED_TTL if confirmed else WEBFINGER_REFUTED_TTL,
+        )
+        return confirmed
+
+    @classmethod
     def fetch_collection(cls, client: httpx.Client, uri: str) -> tuple[int, list[dict]]:
         try:
             response = client.get(
@@ -1107,6 +1313,9 @@ class Identity(StatorModel):
                 headers={"Accept": "application/activity+json"},
             )
             response.raise_for_status()
+        except SSRFAttemptError:
+            logger.info("Collection %s blocked as non-public", uri)
+            return 0, []
         except (httpx.HTTPError, ssl.SSLCertVerificationError) as ex:
             response = getattr(ex, "response", None)
             if isinstance(ex, httpx.TimeoutException) or (
@@ -1179,6 +1388,11 @@ class Identity(StatorModel):
 
         if self.local:
             raise ValueError("Cannot fetch local identities")
+        if self.canonical_id:
+            # This row is a second URI for an actor stored elsewhere. Asking
+            # the retired endpoint gains nothing and a 410 there would delete
+            # the row, taking the mapping with it.
+            return False
         if (self.actor_uri or "").lower().split(":")[0] not in ["http", "https"]:
             return False
         try:
@@ -1199,7 +1413,7 @@ class Identity(StatorModel):
             if status_code in [408, 429, 504]:
                 raise TryAgainLater()
             if status_code == 410 and self.pk:
-                # Their account got deleted, so let's do the same.
+                # Remove the deleted remote actor and its related data.
                 Identity.objects.filter(pk=self.pk).delete()
             if status_code < 500 and status_code not in [401, 403, 404, 406, 410]:
                 logger.info(
@@ -1221,6 +1435,22 @@ class Identity(StatorModel):
             return False
         if "type" not in document:
             return False
+        # Preserve previously stored handles if new trust checks fail during refresh.
+        # Repair legacy inconsistencies explicitly rather than stranding identities on reads.
+        stored_username = self.username
+        stored_domain_id = self.domain_id
+        unclaimed = not stored_username
+        # Reject unclaimed aliases so they cannot take the canonical actor's handle.
+        document_id = document.get("id")
+        if unclaimed and isinstance(document_id, str) and document_id != self.actor_uri:
+            logger.info(
+                "Actor %s identifies as %s, not storing it as a separate identity",
+                self.actor_uri,
+                document_id,
+            )
+            return False
+        # Compare the normalised username, so a list/language-wrapped value
+        # that decodes to the stored one doesn't look like a change
         username = _remote_text(document.get("preferredUsername"))
         self.name = _remote_text(document.get("name"))
         # "url" may be a bare URI, an embedded Link, or an array of either
@@ -1278,16 +1508,56 @@ class Identity(StatorModel):
                 )
         # Now go do webfinger with that info to see if we can get a canonical domain
         actor_url_parts = urlparse(self.actor_uri)
+        if not actor_url_parts.hostname:
+            return False
+        # A remote row cannot live on one of our own domains: the Domain row
+        # there is local, so get_remote_domain() would fail to insert it
+        host_domain = Domain.get_domain(actor_url_parts.hostname)
+        if host_domain and host_domain.local:
+            return False
         self.domain = Domain.get_remote_domain(actor_url_parts.hostname)
         if self.username:
+            queried = f"{self.username}@{actor_url_parts.hostname}"
             try:
-                webfinger_actor, webfinger_handle = self.fetch_webfinger(
-                    f"{self.username}@{actor_url_parts.hostname}"
+                webfinger_actor, webfinger_handle = self.fetch_webfinger(queried)
+                confirmed = (
+                    self.confirm_webfinger_handle(
+                        self.actor_uri, queried, webfinger_handle
+                    )
+                    if webfinger_handle and webfinger_actor == self.actor_uri
+                    else None
                 )
-                if webfinger_handle:
+                if webfinger_handle and webfinger_actor != self.actor_uri:
+                    # WebFinger names another actor, so its handle is not ours.
+                    # Keep the stored handle, or fall back to our actor host for an unclaimed row.
+                    if stored_username and stored_domain_id:
+                        self.username = stored_username
+                        self.domain = Domain.get_remote_domain(stored_domain_id)
+                    logger.info(
+                        "WebFinger for %s points at %s, keeping %s@%s",
+                        self.actor_uri,
+                        webfinger_actor,
+                        self.username,
+                        self.domain_id,
+                    )
+                elif confirmed:
                     webfinger_username, webfinger_domain = webfinger_handle.split("@")
                     self.username = webfinger_username
                     self.domain = Domain.get_remote_domain(webfinger_domain)
+                elif webfinger_handle:
+                    # The subject names a domain that does not vouch for this
+                    # actor. Refuted, it falls back to the host handle; merely
+                    # unchecked, a row keeps the handle it already holds.
+                    if confirmed is None and stored_username and stored_domain_id:
+                        self.username = stored_username
+                        self.domain = Domain.get_remote_domain(stored_domain_id)
+                    logger.info(
+                        "WebFinger subject %s for %s not confirmed, keeping %s@%s",
+                        webfinger_handle,
+                        self.actor_uri,
+                        self.username,
+                        self.domain_id,
+                    )
             except TryAgainLater:
                 # continue with original domain when webfinger times out
                 logger.info("WebFinger timed out: %s", self.actor_uri)
@@ -1328,6 +1598,23 @@ class Identity(StatorModel):
                 self.pk: int | None = other_row.pk
                 with transaction.atomic():
                     self.save()
+            else:
+                # The handle is already held by an alias or distinct actor (e.g. Lemmy user/group).
+                # The save failed; do not report a successful refresh.
+                other_row = (
+                    Identity.objects.filter(username=self.username, domain=self.domain)
+                    .exclude(pk=self.pk)
+                    .first()
+                )
+                logger.info(
+                    "Cannot save actor %s as %s@%s, already held by %s: %s",
+                    self.actor_uri,
+                    self.username,
+                    self.domain_id,
+                    other_row.actor_uri if other_row else "?",
+                    e,
+                )
+                return False
 
         # Fetch featured tags, posts, counts in a followup task
         InboxMessage.create_internal(

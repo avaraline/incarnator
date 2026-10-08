@@ -6,6 +6,7 @@ from urllib.parse import urldefrag, urlparse
 from activities.models import Post
 from activities.services import TimelineService
 from core.decorators import cache_page
+from core.json import clean_json
 from core.ld import GENERIC_AS_TYPES, canonicalise, get_str_or_id
 from core.signatures import (
     HttpSignature,
@@ -120,7 +121,9 @@ class NodeInfo(View):
     """
 
     def get(self, request):
-        host = request.META.get("HOST", settings.MAIN_DOMAIN)
+        if not request.domain or not request.domain.local:
+            raise Http404("Not a local domain")
+        host = request.get_host()
         return JsonResponse(
             {
                 "links": [
@@ -193,6 +196,11 @@ class Webfinger(FederatedView):
             actor = SystemActor()
         else:
             actor = by_handle_or_404(request, handle)
+            if actor.deleted:
+                # The only signal a peer can pull while the actor endpoint
+                # still answers 200 with a Tombstone, which Mastodon does not
+                # accept as a deletion.
+                return HttpResponse(status=410)
 
         return JsonResponse(actor.to_webfinger(), content_type="application/jrd+json")
 
@@ -212,7 +220,9 @@ class Inbox(FederatedView):
         # use raw_document rather than the canonicalised form.
         try:
             raw_document = json.loads(request.body)
-            document = canonicalise(raw_document, include_security=True, outbound=False)
+            document = canonicalise(
+                clean_json(raw_document), include_security=True, outbound=False
+            )
         except ValueError, JsonLdError:
             # pyld reports malformed JSON-LD with its own exception, and a
             # non-UTF-8 body arrives here as UnicodeDecodeError, so the log
@@ -302,17 +312,20 @@ class Inbox(FederatedView):
                 # We don't have an Identity record for the user. No-op
                 return HttpResponse(status=202)
 
-        # See if it's from a blocked user or domain - without calling
-        # fetch_actor, which would fetch data from potentially bad actor
-        domain = identity.domain
-        if not domain:
-            actor_url_parts = urlparse(document["actor"])
-            domain = Domain.get_remote_domain(actor_url_parts.hostname)
-        if identity.blocked or domain.recursively_blocked():
+        # Check actor host and WebFinger handle domain without fetching the actor.
+        # Use an unsaved Domain to avoid creating rows or conflicting with local domains.
+        actor_host = Domain(domain=urlparse(document["actor"]).hostname or "")
+        domain_blocked = actor_host.recursively_blocked() or bool(
+            identity.domain_id
+            and identity.domain_id.lower() != actor_host.domain
+            and identity.domain
+            and identity.domain.recursively_blocked()
+        )
+        if identity.blocked or domain_blocked:
             # I love to lie! Throw it away!
             logger.info(
                 "Inbox: Discarded message from blocked %s %s",
-                "domain" if domain.recursively_blocked() else "user",
+                "domain" if domain_blocked else "user",
                 identity.actor_uri,
             )
             return HttpResponse(status=202)
@@ -381,12 +394,14 @@ class Inbox(FederatedView):
                             "relay_uri": key_id_actor,
                             "signature": sig_b64,
                             "headers_string": headers_string,
+                            "signed_headers": signature_details["headers"],
                         }
                     else:
                         metadata["http_sig"] = {
                             "actor_uri": document["actor"],
                             "signature": sig_b64,
                             "headers_string": headers_string,
+                            "signed_headers": signature_details["headers"],
                         }
             except VerificationFormatError as e:
                 logger.warning("Inbox error: Bad HTTP signature format: %s", e.args[0])
@@ -456,7 +471,7 @@ class Inbox(FederatedView):
                     # original structure rather than the canonicalized message.
                     metadata["ld_sig"] = {
                         "creator_uri": creator,
-                        "raw_document": raw_document,
+                        "raw_document": clean_json(raw_document),
                     }
             except VerificationFormatError as e:
                 logger.warning("Inbox error: Bad LD signature format: %s", e.args[0])
@@ -534,6 +549,9 @@ class Inbox(FederatedView):
                 # (e.g. appending to @context) and forwarding must resend
                 # exactly what the origin signed.
                 forward_raw_document = json.loads(request.body)
+                # A cleaned copy no longer matches its signature, so drop it
+                if clean_json(forward_raw_document) is not forward_raw_document:
+                    forward_raw_document = None
 
         if verified:
             InboxMessage.objects.create(

@@ -5,12 +5,17 @@ on:
     paths:
       - "**.py"
       - "**.yml"
+      - "**.html"
+      - "**.css"
       - "uv.lock"
     branches:
       - main
   pull_request:
     paths:
       - "**.py"
+      - "**.yml"
+      - "**.html"
+      - "**.css"
       - "uv.lock"
 
 jobs:
@@ -45,6 +50,7 @@ jobs:
       - name: Run pytest
         env:
           TAKAHE_DATABASE_SERVER: "postgres://localhost/takahe"
+          TAKAHE_CACHES_DEFAULT: "redis://localhost:6379/0"
         run: |
           uv run pytest
       - name: Run pre-commit

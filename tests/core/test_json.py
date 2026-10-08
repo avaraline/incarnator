@@ -1,6 +1,7 @@
 import httpx
+import pytest
 
-from core.json import find_ap_alternate
+from core.json import clean_json, find_ap_alternate, json_from_response
 
 
 def _resp(url: str, *, content: bytes = b"", headers: list[tuple[str, str]] = None):
@@ -97,3 +98,49 @@ def test_find_ap_alternate_ignores_non_alternate_rels():
         ],
     )
     assert find_ap_alternate(response) is None
+
+
+def test_clean_json_removes_nul_replaces_surrogates_and_nan():
+    data = {
+        "na\x00me": "a\x00b",
+        "list": ["\ud83d cut", ("x\x00",)],
+        "n": float("nan"),
+        "inf": float("-inf"),
+        "ok": "\U0001f600",
+    }
+    assert clean_json(data) == {
+        "name": "ab",
+        "list": ["� cut", ["x"]],
+        "n": None,
+        "inf": None,
+        "ok": "\U0001f600",
+    }
+
+
+def test_json_from_response_cleans_escapes():
+    expected = {"name": "ab", "summary": "�", "n": None}
+    body = b'{"name": "a\\u0000b", "summary": "\\ud83d", "n": NaN}'
+    response = _resp(
+        "https://remote.example/users/a",
+        content=body,
+        headers=[("content-type", "application/activity+json")],
+    )
+    assert json_from_response(response) == expected
+    response = _resp(
+        "https://remote.example/users/a",
+        content=body,
+        headers=[("content-type", "application/activity+json; charset=utf-8")],
+    )
+    assert json_from_response(response) == expected
+
+
+@pytest.mark.parametrize("charset", ["bogus", "a=b"])
+def test_json_from_response_ignores_unknown_charset(charset):
+    response = _resp(
+        "https://remote.example/users/a",
+        content=b'{"id": "https://remote.example/users/a"}',
+        headers=[
+            ("content-type", f"application/activity+json; charset={charset}"),
+        ],
+    )
+    assert json_from_response(response) == {"id": "https://remote.example/users/a"}

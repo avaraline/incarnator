@@ -24,6 +24,32 @@ class Application(models.Model):
     def __str__(self):
         return self.name
 
+    @staticmethod
+    def parse_redirect_uris(value: str) -> list[str]:
+        """Split callbacks on newlines, falling back to legacy comma-separated rows.
+        Commas inside a newline-separated URI must remain intact."""
+        value = value.replace("\r\n", "\n").replace("\r", "\n")
+        separator = "\n" if "\n" in value else ","
+        return [uri.strip() for uri in value.split(separator) if uri.strip()]
+
+    @property
+    def redirect_uri_list(self) -> list[str]:
+        return self.parse_redirect_uris(self.redirect_uris)
+
+    def matches_redirect_uri(self, uri: str) -> bool:
+        """Match a registered callback exactly; retain allow-any for legacy empty rows."""
+        if not uri:
+            return False
+        registered = self.redirect_uri_list
+        if not registered:
+            return True
+        if uri in registered:
+            return True
+        # A lone registered URI holding a comma is split by the legacy
+        # separator above, so accept the stored registration whole as well.
+        stored = self.redirect_uris.strip()
+        return "\n" not in stored and "\r" not in stored and uri == stored
+
     @classmethod
     def create(
         cls,

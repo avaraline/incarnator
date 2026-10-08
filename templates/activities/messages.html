@@ -1,0 +1,20 @@
+{% extends "settings/base.html" %}
+{% block title %}Messages{% endblock %}
+{% block settings_content %}
+    <h1>Messages</h1>
+    <p><a class="button" href="{% url 'message_new' handle=identity.handle %}">New message</a></p>
+    {% for conversation in conversations %}
+        <article class="message-thread">
+            <h2><a href="{% url 'message' handle=identity.handle conversation_id=conversation.pk %}">{% for participant in conversation.participants.all %}{% if participant != identity %}@{{ participant.handle }} {% endif %}{% endfor %}</a>{% if conversation.viewer_unread %} <span class="message-unread">Unread</span>{% endif %}</h2>
+            <p>{{ conversation.last_post.summary|default:conversation.last_post.content|striptags|truncatechars:160 }}</p>
+            <form method="post">
+                {% csrf_token %}
+                <input type="hidden" name="conversation" value="{{ conversation.pk }}">
+                {% if conversation.viewer_unread %}<button name="action" value="read">Mark read</button>{% else %}<button name="action" value="unread">Mark unread</button>{% endif %}
+                <button name="action" value="dismiss">Dismiss</button>
+            </form>
+        </article>
+    {% empty %}<p>No messages yet. Start a conversation using a full account handle.</p>{% endfor %}
+    {% if page_obj.has_previous %}<a href="?page={{ page_obj.previous_page_number }}">Newer</a>{% endif %}
+    {% if page_obj.has_next %}<a href="?page={{ page_obj.next_page_number }}">Older</a>{% endif %}
+{% endblock %}

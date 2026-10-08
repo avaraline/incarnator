@@ -239,6 +239,97 @@ def test_verify_request_hs2019_with_created(keypair):
     HttpSignature.verify_request(request, keypair["public_key"])
 
 
+def _signed_request(keypair, method: str, signed_headers: list[str], tamper=False):
+    """
+    Builds a request to /inbox whose signature covers exactly signed_headers.
+    Digest and Date headers are always sent; only their coverage varies.
+    """
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    from django.utils.http import http_date
+
+    body = b'{"type": "Note"}'
+    digest = HttpSignature.calculate_digest(body)
+    date = http_date()
+    values = {
+        "(request-target)": f"{method.lower()} /inbox",
+        "host": "example.com",
+        "date": date,
+        "digest": digest,
+    }
+    signed_string = "\n".join(
+        f"{name.lower()}: {values[name.lower()]}" for name in signed_headers
+    )
+    private_key = serialization.load_pem_private_key(
+        keypair["private_key"].encode(), password=None
+    )
+    sig_bytes = private_key.sign(
+        signed_string.encode(), padding.PKCS1v15(), hashes.SHA256()
+    )
+    if tamper:
+        sig_bytes = bytes([sig_bytes[0] ^ 0xFF]) + sig_bytes[1:]
+    sig_b64 = base64.b64encode(sig_bytes).decode()
+    return RequestFactory().generic(
+        method,
+        "/inbox",
+        data=body,
+        content_type="application/json",
+        HTTP_HOST="example.com",
+        HTTP_DATE=date,
+        HTTP_DIGEST=digest,
+        HTTP_SIGNATURE=(
+            f'keyId="{keypair["public_key_id"]}",'
+            f'algorithm="rsa-sha256",'
+            f'headers="{" ".join(signed_headers)}",'
+            f'signature="{sig_b64}"'
+        ),
+    )
+
+
+def test_verify_request_logs_unsigned_digest(keypair, caplog):
+    request = _signed_request(keypair, "POST", ["(request-target)", "host", "date"])
+    with caplog.at_level("ERROR", logger="core.signatures"):
+        HttpSignature.verify_request(request, keypair["public_key"])
+    assert len(caplog.records) == 1
+    assert "does not cover Digest" in caplog.records[0].getMessage()
+    assert caplog.records[0].keyid == keypair["public_key_id"]
+
+
+def test_verify_request_signed_digest_not_logged(keypair, caplog):
+    request = _signed_request(
+        keypair, "POST", ["(request-target)", "host", "date", "digest"]
+    )
+    with caplog.at_level("ERROR", logger="core.signatures"):
+        HttpSignature.verify_request(request, keypair["public_key"])
+    assert caplog.records == []
+
+
+def test_verify_request_get_without_digest_not_logged(keypair, caplog):
+    request = _signed_request(keypair, "GET", ["(request-target)", "host", "date"])
+    with caplog.at_level("ERROR", logger="core.signatures"):
+        HttpSignature.verify_request(request, keypair["public_key"])
+    assert caplog.records == []
+
+
+def test_verify_request_bad_signature_without_digest_not_logged(keypair, caplog):
+    request = _signed_request(
+        keypair, "POST", ["(request-target)", "host", "date"], tamper=True
+    )
+    with caplog.at_level("ERROR", logger="core.signatures"):
+        with pytest.raises(VerificationError):
+            HttpSignature.verify_request(request, keypair["public_key"])
+    assert caplog.records == []
+
+
+def test_verify_request_mixed_case_digest_not_logged(keypair, caplog):
+    request = _signed_request(
+        keypair, "POST", ["(request-target)", "Host", "Date", "Digest"]
+    )
+    with caplog.at_level("ERROR", logger="core.signatures"):
+        HttpSignature.verify_request(request, keypair["public_key"])
+    assert caplog.records == []
+
+
 def test_verify_request_created_timestamp_too_old(keypair):
     """
     (created) timestamp outside the allowed window raises VerificationFormatError.

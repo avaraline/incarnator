@@ -46,6 +46,7 @@ COPY docker/nginx.conf.d/* /etc/nginx/conf.d/
 
 COPY . /takahe
 COPY --from=builder /takahe/.venv /takahe/.venv
+COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
 
 # Sanity-test the nginx config
 RUN nginx -t

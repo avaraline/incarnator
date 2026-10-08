@@ -65,7 +65,7 @@ Once your session is up and running, you can:
 
 …install the test dependencies inside your container::
 
-    docker compose -f docker/docker-compose.yml exec web pip install -r requirements-dev.lock
+    docker compose -f docker/docker-compose.yml run --rm setup uv sync --frozen
 
 …run the tests inside your container::
 
@@ -206,3 +206,34 @@ In order to make a release of Takahē, follow these steps:
 
 * Post on the official account announcing the relase and linking to the
   now-published release notes.
+
+Streaming development
+---------------------
+
+The development Compose file includes Redis and an optional streaming profile::
+
+    TAKAHE_STREAMING_ENABLED=true docker compose -f docker/docker-compose.yml --profile streaming up --build
+
+Keep ``TAKAHE_STREAMING_ENABLED=true`` in the environment for subsequent Compose
+commands while using streaming. The web service stays at port 8000 and proxies
+streaming internally; port 8002 does not need to be published.
+
+The source directory is mounted for development. A separate ``venv`` volume
+keeps the container's Linux Python environment separate from a host virtualenv.
+After changing dependencies, update that volume using::
+
+    docker compose -f docker/docker-compose.yml run --rm setup uv sync --frozen
+
+For tests run from the host, start the development database and Redis, install
+the development dependencies with ``uv sync --frozen``, and provide reachable
+PostgreSQL and Redis URLs. The test suite exercises actual Redis pub/sub for
+streaming (the application cache is isolated per test)::
+
+    TAKAHE_DATABASE_SERVER=postgres://postgres:insecure_password@localhost:5433/takahe \
+    TAKAHE_CACHES_DEFAULT=redis://localhost:6379/0 uv run pytest
+
+Redis is not published by the Compose file. For host tests, run a separate local
+Redis or publish its port on loopback in a local Compose override. To test entirely
+inside the Compose network, install dev dependencies as above and run::
+
+    docker compose -f docker/docker-compose.yml run --rm setup pytest

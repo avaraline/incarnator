@@ -1,0 +1,18 @@
+{% extends "settings/base.html" %}
+{% block title %}{% if conversation %}Conversation{% else %}New message{% endif %}{% endblock %}
+{% block settings_content %}
+    <p><a href="{% url 'messages' handle=identity.handle %}">Back to messages</a></p>
+    <h1>{% if conversation %}Conversation{% else %}New message{% endif %}</h1>
+    <p>Only the listed participants receive these messages. Messages are not end-to-end encrypted.</p>
+    {% for post in posts %}{% include "activities/_post.html" with reply=True message_view=True %}{% endfor %}
+    {% if page_obj.has_previous %}<a href="?page={{ page_obj.previous_page_number }}">Newer messages</a>{% endif %}
+    {% if page_obj.has_next %}<a href="?page={{ page_obj.next_page_number }}">Older messages</a>{% endif %}
+    <form method="post">
+        {% csrf_token %}
+        {{ form.non_field_errors }}
+        {% include "forms/_field.html" with field=form.recipients %}
+        {% include "forms/_field.html" with field=form.text %}
+        {% include "forms/_field.html" with field=form.content_warning %}
+        <div class="buttons"><button>Send message</button></div>
+    </form>
+{% endblock %}

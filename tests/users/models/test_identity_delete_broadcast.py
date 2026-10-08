@@ -1,0 +1,334 @@
+import datetime
+import time
+import threading
+
+import httpx
+import pytest
+from django.conf import settings
+from django.utils import timezone
+
+from activities.models import FanOut, FanOutStates, Post
+from stator.exceptions import TryAgainLater
+from users.models import Domain, Follow, Identity, IdentityStates
+from users.models.domain import DomainStates
+from users.services.delete_broadcast import (
+    DeleteBroadcaster,
+)
+
+
+def make_serializable(identity):
+    """The identity fixture has a keypair but no key id, which to_ap() needs."""
+    identity.public_key_id = f"{identity.actor_uri}#main-key"
+    identity.save()
+    return identity
+
+
+def make_peer(host: str, domain_state: str = "updated", blocked: bool = False):
+    domain = Domain.objects.create(
+        domain=host, local=False, state=domain_state, blocked=blocked
+    )
+    return Identity.objects.create(
+        actor_uri=f"https://{host}/test-actor/",
+        inbox_uri=f"https://{host}/@test/inbox/",
+        shared_inbox_uri=f"https://{host}/inbox/",
+        username="test",
+        domain=domain,
+        local=False,
+        state="updated",
+    )
+
+
+@pytest.mark.django_db
+def test_acquainted_peers_covers_followers_and_leaves_strangers(identity):
+    follower = make_peer("follower.test")
+    followee = make_peer("followee.test")
+    stranger = make_peer("stranger.test")
+    Follow.objects.create(source=follower, target=identity, state="accepted")
+    Follow.objects.create(source=identity, target=followee, state="accepted")
+
+    acquainted = set(IdentityStates.acquainted_peers(identity))
+
+    assert acquainted == {follower, followee}
+    assert stranger not in acquainted
+
+
+@pytest.mark.django_db
+def test_unacquainted_inboxes_skip_the_acquainted_and_the_unreachable(identity):
+    follower = make_peer("follower.test")
+    Follow.objects.create(source=follower, target=identity, state="accepted")
+    stranger = make_peer("stranger.test")
+    make_peer("dead.test", domain_state=DomainStates.connection_issue)
+    make_peer("blocked.test", blocked=True)
+
+    inboxes = IdentityStates.unacquainted_peer_inboxes(identity)
+
+    assert inboxes == [stranger.shared_inbox_uri]
+
+
+@pytest.mark.django_db
+def test_one_fanout_per_acquainted_peer_sharing_an_inbox(identity):
+    first = make_peer("shared-a.test")
+    second = make_peer("shared-b.test")
+    second.shared_inbox_uri = first.shared_inbox_uri
+    second.save()
+    Follow.objects.create(source=first, target=identity, state="accepted")
+    Follow.objects.create(source=second, target=identity, state="accepted")
+
+    IdentityStates.targets_fan_out(
+        identity, FanOut.Types.identity_deleted, broadcast=True
+    )
+
+    fan_outs = FanOut.objects.filter(subject_identity=identity)
+    assert fan_outs.count() == 1
+    # bulk_create bypasses save(), so the state default has to come from the
+    # field itself or nothing would ever pick these up.
+    assert fan_outs.first().state == FanOutStates.initial_state.name
+
+
+@pytest.mark.django_db
+def test_broadcast_state_sends_to_the_unacquainted_and_finishes(
+    identity, config_system, monkeypatch
+):
+    stranger = make_peer("stranger.test")
+    sent = []
+    monkeypatch.setattr(
+        "users.services.delete_broadcast.broadcast_identity_deletion",
+        lambda instance, uris: sent.append((instance, uris)) or (len(uris), len(uris)),
+    )
+
+    result = IdentityStates.handle_deleted_broadcasting(identity)
+
+    assert result == IdentityStates.deleted_fanned_out
+    assert sent == [(identity, [stranger.shared_inbox_uri])]
+
+
+@pytest.mark.django_db
+def test_broadcast_state_stands_down_when_another_replica_holds_the_lock(
+    identity, config_system, monkeypatch
+):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def taken(_pk):
+        yield False
+
+    called = []
+    monkeypatch.setattr(
+        "users.services.delete_broadcast.identity_broadcast_lock", taken
+    )
+    monkeypatch.setattr(
+        "users.services.delete_broadcast.broadcast_identity_deletion",
+        lambda instance, uris: called.append(uris),
+    )
+
+    result = IdentityStates.handle_deleted_broadcasting(identity)
+
+    # Staying put, not finishing on the other replica's behalf: if that one
+    # dies mid-broadcast, this retry is the only thing that sends the rest.
+    assert result is None
+    assert called == []
+
+
+@pytest.fixture
+def federating(monkeypatch):
+    monkeypatch.setattr(settings.SETUP, "NO_FEDERATION", False)
+
+
+@pytest.mark.django_db
+def test_broadcaster_signs_per_inbox_from_one_body_and_swallows_failures(
+    identity, config_system, federating
+):
+    make_serializable(identity)
+    identity.deleted = timezone.now()
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        if "bad.test" in str(request.url):
+            raise httpx.ConnectError("nope")
+        return httpx.Response(202)
+
+    broadcaster = DeleteBroadcaster(
+        identity, concurrency=4, transport=httpx.MockTransport(handler)
+    )
+
+    attempted, delivered = broadcaster.send(
+        ["https://good.test/inbox/", "https://bad.test/inbox/"]
+    )
+
+    assert attempted == 2
+    assert delivered == 1
+    assert {r.headers["host"] for r in seen} == {"good.test", "bad.test"}
+    assert all("keyId=" in r.headers["signature"] for r in seen)
+    # One body and one digest, whatever the inbox count.
+    assert len({r.headers["digest"] for r in seen}) == 1
+
+
+@pytest.mark.django_db
+def test_broadcaster_stops_dispatching_at_its_deadline(
+    identity, config_system, federating
+):
+    make_serializable(identity)
+    identity.deleted = timezone.now()
+    seen = []
+    broadcaster = DeleteBroadcaster(
+        identity,
+        deadline=0.0,
+        concurrency=2,
+        transport=httpx.MockTransport(
+            lambda request: seen.append(request) or httpx.Response(202)
+        ),
+    )
+
+    attempted, delivered = broadcaster.send(["https://a.test/inbox/"] * 5)
+
+    assert (attempted, delivered) == (0, 0)
+    assert seen == []
+
+
+@pytest.mark.django_db
+def test_identity_deleted_fanout_gives_up_after_a_day(
+    identity, remote_identity, config_system, monkeypatch
+):
+    def refuse(cls, sender, instance, body):
+        raise TryAgainLater()
+
+    make_serializable(identity)
+    monkeypatch.setattr(FanOutStates, "_deliver", classmethod(refuse))
+    fan_out = FanOut.objects.create(
+        identity=remote_identity,
+        type=FanOut.Types.identity_deleted,
+        subject_identity=identity,
+    )
+
+    # Still young: the peer may yet come back, so the retry stands.
+    with pytest.raises(TryAgainLater):
+        FanOutStates.handle_new(fan_out)
+
+    FanOut.objects.filter(pk=fan_out.pk).update(
+        state_changed=timezone.now() - datetime.timedelta(days=2)
+    )
+    fan_out.refresh_from_db()
+
+    assert FanOutStates.handle_new(fan_out) == FanOutStates.failed
+
+
+@pytest.mark.django_db
+def test_other_fanout_types_keep_their_three_day_retry(
+    identity, remote_identity, config_system, monkeypatch
+):
+    def refuse(cls, sender, instance, body):
+        raise TryAgainLater()
+
+    monkeypatch.setattr(FanOutStates, "_deliver", classmethod(refuse))
+    post = Post.create_local(author=identity, content="hello")
+    fan_out = FanOut.objects.create(
+        identity=remote_identity,
+        type=FanOut.Types.post,
+        subject_post=post,
+    )
+    FanOut.objects.filter(pk=fan_out.pk).update(
+        state_changed=timezone.now() - datetime.timedelta(days=2)
+    )
+    fan_out.refresh_from_db()
+
+    with pytest.raises(TryAgainLater):
+        FanOutStates.handle_new(fan_out)
+
+
+@pytest.mark.django_db
+def test_broadcaster_stops_dispatching_partway_through(
+    identity, config_system, federating
+):
+    # The deadline must bound dispatched requests, not just the submission loop.
+    make_serializable(identity)
+    identity.deleted = timezone.now()
+    seen = []
+
+    def slow(request):
+        seen.append(request)
+        time.sleep(0.2)
+        return httpx.Response(202)
+
+    broadcaster = DeleteBroadcaster(
+        identity,
+        deadline=0.5,
+        concurrency=1,
+        transport=httpx.MockTransport(slow),
+    )
+
+    started = time.monotonic()
+    attempted, _ = broadcaster.send([f"https://peer{n}.test/inbox/" for n in range(40)])
+    elapsed = time.monotonic() - started
+
+    assert 0 < attempted < 40
+    assert elapsed < 5
+
+
+@pytest.mark.django_db
+def test_broadcaster_does_not_count_a_refusal_as_delivered(
+    identity, config_system, federating
+):
+    make_serializable(identity)
+    identity.deleted = timezone.now()
+    broadcaster = DeleteBroadcaster(
+        identity,
+        concurrency=2,
+        transport=httpx.MockTransport(lambda request: httpx.Response(500)),
+    )
+
+    attempted, delivered = broadcaster.send(["https://peer.test/inbox/"])
+
+    assert (attempted, delivered) == (1, 0)
+
+
+@pytest.mark.django_db
+def test_broadcaster_abandons_a_stalled_peer(identity, config_system, federating):
+    # Blocking DNS can outlast HTTP timeouts; Stator must still release the handler.
+    make_serializable(identity)
+    identity.deleted = timezone.now()
+
+    release = threading.Event()
+
+    def stall(request):
+        release.wait(timeout=5)
+        return httpx.Response(202)
+
+    broadcaster = DeleteBroadcaster(
+        identity,
+        deadline=0.2,
+        tail_grace=0.3,
+        concurrency=1,
+        transport=httpx.MockTransport(stall),
+    )
+
+    started = time.monotonic()
+    try:
+        attempted, delivered = broadcaster.send(
+            [f"https://peer{n}.test/inbox/" for n in range(5)]
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert elapsed < 5
+    assert delivered == 0
+    assert attempted >= 1
+
+
+@pytest.mark.django_db
+def test_remote_identity_in_a_delete_state_transitions_validly(remote_identity):
+    # Invalid transitions leave Stator retrying the same row indefinitely.
+    for state, handler in (
+        (IdentityStates.deleted, IdentityStates.handle_deleted),
+        (
+            IdentityStates.deleted_broadcasting,
+            IdentityStates.handle_deleted_broadcasting,
+        ),
+    ):
+        result = handler(remote_identity)
+        assert result in state.children, f"{state} cannot reach {result}"
+
+    remote_identity.state = IdentityStates.deleted.name
+    remote_identity.save()
+    assert remote_identity.transition_attempt() == IdentityStates.deleted_fanned_out

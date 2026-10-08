@@ -28,3 +28,8 @@ This fork has a number of changes/additions:
 * Poll creation, voting, edits, and expiry notifications
 * ActivityPub inbox forwarding, Lemmy interoperability, and collection feature authorization
 * Article and media object rendering with preview cards
+* Poll and Direct-message UI
+* Opt-in Mastodon streaming over WebSocket and Server-Sent Events
+
+Requires Python 3.14+ and PostgreSQL 14+. See [installation](docs/installation.rst),
+[development](docs/contributing.rst), and [upgrade notes](docs/releases/next.rst).

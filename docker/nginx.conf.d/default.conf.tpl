@@ -1,3 +1,8 @@
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
 proxy_cache_path /cache/nginx levels=1:2 keys_zone=takahe:20m inactive=14d max_size=__CACHESIZE__;
 
 upstream takahe {
@@ -54,6 +59,11 @@ server {
         proxy_cache_valid 500 502 503 504 0s;
         proxy_cache_valid any 1h;
         add_header X-Cache $upstream_cache_status;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; sandbox" always;
+        proxy_hide_header X-Content-Type-Options;
+        proxy_hide_header Content-Security-Policy;
+        proxy_force_ranges on;
 
         # Signal to Takahē that we support full URI accel proxying
         proxy_set_header X-Takahe-Accel true;
@@ -125,6 +135,26 @@ server {
         proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
         proxy_cache_background_update on;
         add_header X-Cache $upstream_cache_status;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; sandbox" always;
+        proxy_hide_header X-Content-Type-Options;
+        proxy_hide_header Content-Security-Policy;
+        proxy_force_ranges on;
+    }
+
+    # Streaming is served by a separate ASGI process; keep long-lived
+    # connections out of the WSGI worker pool. Do not log bearer query strings.
+    location ~ ^/api/v1/streaming(?:/|$) {
+        access_log off;
+        __STREAMINGPROXY__
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $http_host;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
     }
 
     # Default config for all other pages

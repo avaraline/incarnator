@@ -29,6 +29,10 @@ class Command(BaseCommand):
         identities = Identity.objects.filter(
             local=False,
             created__lt=timezone.now(),
+            # An emptied row that still names the identity its actor lives on
+            # holds nothing, but peers go on addressing the actor by its URI
+            # and it is what resolves them
+            canonical__isnull=True,
         ).exclude(
             Q(interactions__post__local=True)
             | Q(posts__isnull=False)
@@ -37,6 +41,9 @@ class Command(BaseCommand):
             | Q(inbound_follows__isnull=False)
             | Q(outbound_blocks__isnull=False)
             | Q(inbound_blocks__isnull=False)
+            # Deleting the identity an alias names would null that alias out
+            # and send the actor's traffic back to an emptied row
+            | Q(alias_identities__isnull=False)
         )[:number]
         identity_ids = identities.values_list("id", flat=True)
         print(f"  found {len(identity_ids)}")

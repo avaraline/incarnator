@@ -1,7 +1,5 @@
-version: "3.4"
-
 # DO NOT USE THIS IN PRODUCTION - it is for development only due to insecure
-# settings and the use of "runserver" versus "gunicorn".
+# settings. The web container runs nginx and Gunicorn.
 # See https://docs.jointakahe.org/en/latest/installation/ for more
 
 x-takahe-common:
@@ -17,20 +15,50 @@ x-takahe-common:
       TAKAHE_SECRET_KEY: "insecure_secret"
       TAKAHE_CSRF_HOSTS: '["http://127.0.0.1:8000", "https://127.0.0.1:8000"]'
       TAKAHE_USE_PROXY_HEADERS: "true"
-      TAKAHE_EMAIL_BACKEND: "console://console"
+      TAKAHE_EMAIL_SERVER: "console://console"
       TAKAHE_MAIN_DOMAIN: "example.com"
       TAKAHE_ENVIRONMENT: "development"
+      TAKAHE_CACHES_DEFAULT: "redis://redis:6379/0"
+      TAKAHE_STREAMING_ENABLED: "${TAKAHE_STREAMING_ENABLED:-false}"
+      TAKAHE_STREAMING_UPSTREAM: "streaming:8002"
       GUNICORN_EXTRA_CMD_ARGS: "--reload"
     networks:
       - external_network
       - internal_network
     restart: on-failure
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - ..:/takahe/
+      - venv:/takahe/.venv/
 
 services:
+  redis:
+    image: redis:7-alpine
+    networks:
+      - internal_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: on-failure
+
+  streaming:
+    <<: *takahe-common
+    profiles: ["streaming"]
+    command: ["uvicorn", "takahe.asgi:application", "--host", "0.0.0.0", "--port", "8002", "--workers", "1", "--no-access-log"]
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/api/v1/streaming/health')"]
+      interval: 20s
+      timeout: 5s
+
   db:
     image: docker.io/postgres:15-alpine
     healthcheck:
@@ -50,7 +78,7 @@ services:
   web:
     <<: *takahe-common
     healthcheck:
-      test: ["CMD", "nc", "-z", "-v", "localhost", "8000"]
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('localhost', 8000), timeout=5).close()"]
       interval: 20s
       timeout: 60s
       start_period: 15s
@@ -78,4 +106,5 @@ networks:
   external_network:
 
 volumes:
+  venv:
   dbdata:

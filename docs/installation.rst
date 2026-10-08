@@ -292,3 +292,51 @@ Tuning and Scaling
 
 See :doc:`/tuning` for all the things you should tweak as your server gains
 users. We recommend setting up caches early on!
+
+
+Optional Mastodon Streaming
+---------------------------
+
+Streaming is disabled by default. To enable live updates in compatible clients:
+
+* Set ``TAKAHE_STREAMING_ENABLED=true`` on the web, Stator, and streaming services.
+* Set ``TAKAHE_CACHES_DEFAULT=redis://redis:6379/0`` (or your Redis URL) on all
+  three services. Streaming needs Redis pub/sub; a memory, dummy, or Memcached
+  cache cannot carry events between processes.
+* Run a separate service from the same image with the command::
+
+      uvicorn takahe.asgi:application --host 0.0.0.0 --port 8002 --workers 1 --no-access-log
+
+* Set ``TAKAHE_STREAMING_UPSTREAM=streaming:8002`` on the web container, replacing
+  ``streaming`` with the service's reachable hostname. The bundled nginx routes
+  ``/api/v1/streaming`` and its subpaths there. The default upstream is
+  ``127.0.0.1:8002`` for deployments that run both processes on the same host.
+* Keep the same database, main domain, secret key, and Redis settings across
+  services. Run migrations before starting them.
+
+The ASGI entry point serves streaming only. Normal pages and API calls continue
+through Gunicorn/WSGI. The bundled proxy supports WebSocket upgrades, disables
+response buffering and caching, and gives streams a one-hour idle timeout.
+Any external reverse proxy must also pass WebSocket upgrades and avoid buffering
+SSE responses. Production clients should see HTTPS/WSS on the same public host;
+configure trusted forwarded protocol headers at your outer proxy.
+
+The instance API advertises streaming only when enabled. The endpoint
+``/api/v1/streaming/health`` checks the ASGI process, not database or Redis
+readiness. An authenticated stream additionally verifies those dependencies.
+Access logs are disabled for the streaming route because clients may put tokens
+in the query string; apply the same rule to any outer proxy.
+
+``TAKAHE_STREAMING_DB_THREADS`` (default ``4``, minimum ``1``) bounds concurrent
+DB work per streaming worker. Account for these connections when sizing your
+PostgreSQL pool. Redis events are delivered live without replay; clients reload
+missed updates through the REST API after reconnecting.
+
+Uploaded and proxied media
+-------------------------
+
+Keep the bundled media ``nosniff`` and sandbox Content-Security-Policy headers
+when customizing nginx. They prevent untrusted media from running active content
+on the application origin. The accelerated proxy checks remote destinations
+before handing them to nginx; normal proxy requests also use the safe HTTP
+client. Audio/video uploads receive server-selected extensions.
