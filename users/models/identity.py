@@ -249,6 +249,7 @@ class IdentityStates(StateGraph):
             PostInteraction,
             PostInteractionStates,
             PostStates,
+            ScheduledStatus,
             TimelineEvent,
         )
 
@@ -287,6 +288,7 @@ class IdentityStates(StateGraph):
         List.objects.filter(identity=instance).delete()
         Marker.objects.filter(identity=instance).delete()
         FeatureAuthorization.objects.filter(identity=instance).delete()
+        ScheduledStatus.objects.filter(author=instance).delete()
         # Collect unattached uploads here; they have no post to cascade from.
         # Attached media must survive until Delete activities serialize and post rows go.
         PostAttachment.objects.filter(author=instance, post__isnull=True).delete()
