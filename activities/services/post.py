@@ -37,6 +37,7 @@ class PostService:
                 "author",
                 "author__domain",
                 "preview_card",
+                "application",
             )
         )
         if exclude_threshold is not None:
