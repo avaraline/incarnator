@@ -148,3 +148,43 @@ def test_backdated_post_stays_out_of_timelines(
     # Still listed with the author's statuses
     statuses = api_client.get(f"/api/v1/accounts/{identity.pk}/statuses").json()
     assert str(backdated.pk) in [s["id"] for s in statuses]
+
+
+@pytest.mark.django_db
+def test_editing_backdated_post_stays_quiet(api_client, identity, config_system):
+    config_system.post_backdating = True
+    backdated = Post.objects.get(pk=_post(api_client, status="archive").json()["id"])
+    current = Post.create_local(author=identity, content="current")
+    for post in (backdated, current):
+        response = api_client.put(
+            f"/api/v1/statuses/{post.pk}",
+            content_type="application/json",
+            data={"status": "fixed typo"},
+        )
+        assert response.status_code == 200
+        PostStates.handle_edited(Post.objects.get(pk=post.pk))
+    assert backdated.is_backdated
+    assert not FanOut.objects.filter(subject_post=backdated).exists()
+    assert FanOut.objects.filter(
+        subject_post=current, type=FanOut.Types.post_edited
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_compose_recent_past_time_posts_now(identity, client_with_user, config_system):
+    config_system.post_backdating = True
+    recent = timezone.now() - datetime.timedelta(minutes=2)
+    response = client_with_user.post(
+        f"/@{identity.handle}/compose/",
+        data={
+            "text": "clock skew",
+            "visibility": "0",
+            "scheduled_at": recent.strftime("%Y-%m-%dT%H:%M"),
+            "browser_timezone": "UTC",
+        },
+    )
+    assert response.status_code == 302
+    post = identity.posts.get()
+    assert not post.is_backdated
+    assert post.published > timezone.now() - datetime.timedelta(minutes=1)
+    assert TimelineEvent.objects.filter(subject_post=post).exists()

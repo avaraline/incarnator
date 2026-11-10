@@ -167,6 +167,11 @@ We support anything that is available as part of
 some cache backends will require additional Python packages not installed
 by default with Takahē. More discussion on some major backends is below.
 
+The same cache holds the ``Idempotency-Key`` claims that stop a client's
+retried status request from posting twice. Only a cache shared by all web
+workers, such as Redis, can do that; without one, retries are not
+deduplicated.
+
 
 Redis
 #####

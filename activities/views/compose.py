@@ -213,8 +213,16 @@ class Compose(IdentityViewMixin, FormView):
                     tz = ZoneInfo("UTC")
                 # The field reads the wall time as UTC; reread it in the browser's zone
                 scheduled_at = scheduled_at.replace(tzinfo=tz)
+                now = timezone.now()
                 try:
-                    if scheduled_at <= timezone.now() and Config.system.post_backdating:
+                    if (
+                        Config.system.post_backdating
+                        and now - Post.BACKDATE_MARGIN <= scheduled_at <= now
+                    ):
+                        # a browser clock slightly behind posts right away,
+                        # as the API does
+                        scheduled_at = None
+                    elif scheduled_at <= now and Config.system.post_backdating:
                         check_backdate(
                             self.identity,
                             scheduled_at,

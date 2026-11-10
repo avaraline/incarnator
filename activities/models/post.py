@@ -380,11 +380,14 @@ class PostStates(StateGraph):
         """
         Creates all needed fan-out objects for an edited Post.
         """
-        cls.targets_fan_out(instance, FanOut.Types.post_edited)
+        # a backdated post never reached anyone, so neither does its edit
+        if not instance.is_backdated:
+            cls.targets_fan_out(instance, FanOut.Types.post_edited)
         instance.ensure_hashtags()
         if instance.type not in instance.CONVERTED_TYPES:
             _attach_preview_card(instance.pk, instance.content)
-        publish_post(instance, "status.update")
+        if not instance.is_backdated:
+            publish_post(instance, "status.update")
         if cls.needs_question_tracking(instance):
             question = instance.type_data
             if instance.local and question.last_distributed_tally != question.tally:
@@ -1035,6 +1038,15 @@ class Post(StatorModel):
     # A local post published this long before its row was created was
     # backdated through the client API
     BACKDATE_MARGIN = datetime.timedelta(minutes=5)
+
+    @property
+    def is_backdated(self) -> bool:
+        return bool(
+            self.local
+            and self.published
+            and self.created
+            and self.published < self.created - self.BACKDATE_MARGIN
+        )
 
     ### Local creation/editing ###
     @classmethod
