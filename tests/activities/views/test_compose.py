@@ -128,3 +128,33 @@ def test_schedule_from_compose_too_soon(identity: Identity, client_with_user: Cl
     assertContains(response, "date must be in the future", status_code=200)
     assert not ScheduledStatus.objects.exists()
     assert identity.posts.count() == 0
+
+
+@pytest.mark.django_db
+def test_schedule_poll_from_compose(identity: Identity, client_with_user: Client):
+    later = timezone.now() + datetime.timedelta(days=1)
+    response = client_with_user.post(
+        f"/@{identity.handle}/compose/",
+        data={
+            "text": "Choose later",
+            "visibility": "0",
+            "poll_options": "First\nSecond",
+            "poll_duration": "3600",
+            "poll_multiple": "on",
+            "scheduled_at": later.strftime("%Y-%m-%dT%H:%M"),
+            "browser_timezone": "UTC",
+        },
+    )
+    assert response.status_code == 302
+    scheduled = ScheduledStatus.objects.get(author=identity)
+    assert scheduled.params["poll"] == {
+        "options": ["First", "Second"],
+        "expires_in": 3600,
+        "multiple": True,
+        "hide_totals": False,
+    }
+    post = scheduled.create_post()
+    assert post is not None
+    assert post.type == Post.Types.question
+    assert post.type_data.mode == "anyOf"
+    assert [o.name for o in post.type_data.options] == ["First", "Second"]
