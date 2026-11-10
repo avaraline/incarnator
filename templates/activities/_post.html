@@ -8,7 +8,8 @@
             {% if message_view %}
                 <time title="{{ post.published|default:post.created }}">{{ post.published|default:post.created|timedeltashort }}</time>
             {% else %}
-            <time _="on click go url {% if link_original %}{{ post.url }}{% else %}{{ post.urls.view }}{% endif %} then halt">
+            <time data-url="{% if link_original %}{{ post.url }}{% else %}{{ post.urls.view }}{% endif %}"
+                  _="on click go url @data-url then halt">
                 {% if post.visibility == 0 %}
                     <i class="visibility fa-solid fa-earth-oceania" title="Public" aria-label="public"></i>
                 {% elif post.visibility == 1 %}

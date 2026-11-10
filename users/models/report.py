@@ -7,7 +7,8 @@ from django.core.mail import EmailMultiAlternatives
 from django.db import models
 from django.template.loader import render_to_string
 
-from core.exceptions import ActivityPubFormatError
+from core.exceptions import ActivityPubDeliveryError, ActivityPubFormatError
+from core.files import SSRFAttemptError
 from core.ld import canonicalise, format_ld_date, get_list
 from core.models import Config
 from core.snowflake import Snowflake
@@ -46,7 +47,7 @@ class ReportStates(StateGraph):
                     uri=instance.subject_identity.inbox_uri,
                     body=canonicalise(instance.to_ap()),
                 )
-            except httpx.RequestError:
+            except httpx.RequestError, SSRFAttemptError, ActivityPubDeliveryError:
                 pass
         email = EmailMultiAlternatives(
             subject=f"{Config.system.site_name}: New Moderation Report",
